@@ -35,7 +35,7 @@ conda activate dsrl_pi0
 
 2. Clone this repo with all submodules
 ```
-git clone https://github.com/nakamotoo/dsrl_release --recurse-submodules
+git clone git@github.com:nakamotoo/dsrl_pi0.git --recurse-submodules
 cd dsrl_release
 ```
 
