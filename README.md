@@ -49,7 +49,7 @@ pip install "jax[cuda12]==0.5.0"
 pip install -e openpi
 pip install -e openpi/packages/openpi-client
 
-# instal Libero
+# install Libero
 pip install -e LIBERO
 pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu # needed for libero
 ```
@@ -69,7 +69,7 @@ We provide sample W&B runs and logs: https://wandb.ai/mitsuhiko/DSRL_pi0_public
 ## Training (Real)
 For real-world experiments, we use the remote hosting feature from pi0 (see [here](https://github.com/Physical-Intelligence/openpi/blob/main/docs/remote_inference.md)) which enables us to host the pi0 model on a higher-spec remote server, in case the robot's client machine is not powerful enough. 
 
-0. Setup Franka robot install and DROID package [[link](https://github.com/droid-dataset/droid.git)]
+0. Setup Franka robot and install DROID package [[link](https://github.com/droid-dataset/droid.git)]
 
 1. [On the remote server] Host pi0 droid model on your remote server
 ```
