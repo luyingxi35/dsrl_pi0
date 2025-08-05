@@ -68,7 +68,9 @@ We provide sample W&B runs and logs: https://wandb.ai/mitsuhiko/DSRL_pi0_public
 
 ## Training (Real)
 For real-world experiments, we use the remote hosting feature from pi0 (see [here](https://github.com/Physical-Intelligence/openpi/blob/main/docs/remote_inference.md)) which enables us to host the pi0 model on a higher-spec remote server, in case the robot's client machine is not powerful enough. 
-0. Setup Franka robot install DROID [[link](https://github.com/droid-dataset/droid.git)]
+
+0. Setup Franka robot install and DROID package [[link](https://github.com/droid-dataset/droid.git)]
+
 1. [On the remote server] Host pi0 droid model on your remote server
 ```
 cd openpi && python scripts/serve_policy.py --env=DROID
