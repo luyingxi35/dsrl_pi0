@@ -1,26 +1,103 @@
 #! /usr/bin/env python
-import os
-import jax
-from jaxrl2.agents.pixel_sac.pixel_sac_learner import PixelSACLearner
-from jaxrl2.utils.general_utils import add_batch_dim
-import numpy as np
+import dataclasses
 import logging
-
-import gymnasium as gym
-from gym.spaces import Dict, Box
-
-from jaxrl2.data import ReplayBuffer
-from jaxrl2.utils.wandb_logger import WandBLogger, create_exp_name
+import os
 import tempfile
 from functools import partial
-from examples.train_utils_real import trajwise_alternating_training_loop
+
+import gymnasium as gym
+import jax
+import numpy as np
 import tensorflow as tf
-from jax.experimental.compilation_cache import compilation_cache
-from openpi_client import websocket_client_policy as _websocket_client_policy
 from droid.robot_env import RobotEnv
+from gym.spaces import Box, Dict
+from jax.experimental.compilation_cache import compilation_cache
+from jaxrl2.agents.pixel_sac.pixel_sac_learner import PixelSACLearner
+from jaxrl2.data import ReplayBuffer
+from jaxrl2.utils.general_utils import add_batch_dim
+from jaxrl2.utils.wandb_logger import WandBLogger, create_exp_name
+from openpi_client import websocket_client_policy as _websocket_client_policy
+
+from examples.train_utils_real import trajwise_alternating_training_loop
 
 home_dir = os.environ['HOME']
 compilation_cache.initialize_cache(os.path.join(home_dir, 'jax_compilation_cache'))
+
+DEFAULT_DROID_CONTROL_FREQUENCY = 15
+
+
+@dataclasses.dataclass(frozen=True)
+class PolicyServerConfig:
+    host: str
+    port: int
+
+
+@dataclasses.dataclass(frozen=True)
+class RobotRuntimeConfig:
+    external_camera: str
+    left_camera_id: str
+    right_camera_id: str
+    wrist_camera_id: str
+    max_timesteps: int
+    control_frequency_hz: int = DEFAULT_DROID_CONTROL_FREQUENCY
+
+    @property
+    def camera_to_use(self) -> str:
+        return self.external_camera
+
+
+class PolicyService:
+    def __init__(self, config: PolicyServerConfig):
+        self._config = config
+        self._client = _websocket_client_policy.WebsocketClientPolicy(
+            host=config.host,
+            port=config.port,
+        )
+
+    def preflight(self):
+        metadata = self._client.get_server_metadata()
+        logging.info("OpenPI policy server metadata: %s", metadata)
+        return metadata
+
+    def infer(self, obs, noise=None):
+        return self._client.infer(obs, noise=noise)
+
+    def get_prefix_rep(self, obs):
+        return self._client.get_prefix_rep(obs)
+
+
+class RobotIO:
+    def __init__(self, runtime_config: RobotRuntimeConfig):
+        self._runtime_config = runtime_config
+        self._env = RobotEnv(action_space="joint_velocity", gripper_action_space="position")
+
+    @property
+    def env(self):
+        return self._env
+
+    @property
+    def runtime_config(self):
+        return self._runtime_config
+
+    def preflight(self):
+        obs = self._env.get_observation()
+        image_observations = obs["image"]
+        required_cameras = {
+            self._runtime_config.left_camera_id: "left external",
+            self._runtime_config.right_camera_id: "right external",
+            self._runtime_config.wrist_camera_id: "wrist",
+        }
+        missing = [label for cam_id, label in required_cameras.items() if not _has_left_camera(image_observations, cam_id)]
+        if missing:
+            raise RuntimeError(
+                "DROID camera preflight failed. Missing left-view feeds for: "
+                + ", ".join(missing)
+            )
+        return obs
+
+
+def _has_left_camera(image_observations, camera_id: str) -> bool:
+    return any(camera_id in key and "left" in key for key in image_observations.keys())
 
 def shard_batch(batch, sharding):
     """Shards a batch across devices along its first dimension.
@@ -85,29 +162,27 @@ def main(variant):
     wandb_output_dir = tempfile.mkdtemp()
     wandb_logger = WandBLogger(variant.prefix != '', variant, variant.wandb_project, experiment_id=expname, output_dir=wandb_output_dir, group_name=group_name)
 
-    
-    agent_dp = _websocket_client_policy.WebsocketClientPolicy(
-        host=os.environ['remote_host'],
-        port=os.environ['remote_port']
+    policy_config = PolicyServerConfig(
+        host=variant.policy_host,
+        port=variant.policy_port,
     )
-    logging.info(f"Server metadata: {agent_dp.get_server_metadata()}")
-    
-    logging.info("initializing environment...")
-    env = RobotEnv(action_space="joint_velocity", gripper_action_space="position")
+    policy_service = PolicyService(policy_config)
+    policy_service.preflight()
+
+    runtime_config = RobotRuntimeConfig(
+        external_camera=variant.external_camera,
+        left_camera_id=variant.left_camera_id,
+        right_camera_id=variant.right_camera_id,
+        wrist_camera_id=variant.wrist_camera_id,
+        max_timesteps=variant.max_rollout_steps,
+        control_frequency_hz=variant.control_frequency_hz,
+    )
+    logging.info("Initializing DROID client runtime...")
+    robot_io = RobotIO(runtime_config)
+    robot_io.preflight()
+    env = robot_io.env
     eval_env = env
-    logging.info("created the droid env!")
-    
-    assert os.environ.get('LEFT_CAMERA_ID') is not None
-    assert os.environ.get('RIGHT_CAMERA_ID') is not None
-    assert os.environ.get('WRIST_CAMERA_ID') is not None
-    
-    robot_config = dict(
-        camera_to_use='right',
-        left_camera_id=os.environ['LEFT_CAMERA_ID'],
-        right_camera_id=os.environ['RIGHT_CAMERA_ID'],
-        wrist_camera_id=os.environ['WRIST_CAMERA_ID'],
-        max_timesteps=200
-    )
+    logging.info("Created DROID-aligned robot client runtime.")
     
     dummy_env = DummyEnv(variant)
     sample_obs = add_batch_dim(dummy_env.observation_space.sample())
@@ -117,13 +192,24 @@ def main(variant):
     
     agent = PixelSACLearner(variant.seed, sample_obs, sample_action, **kwargs)
     
-    if variant.restore_path != '':
-        logging.info('restoring from', variant.restore_path)
+    if variant.restore_path:
+        logging.info('restoring from %s', variant.restore_path)
         agent.restore_checkpoint(variant.restore_path)
 
     online_buffer_size = 2 * variant.max_steps  // variant.multi_grad_step
     online_replay_buffer = ReplayBuffer(dummy_env.observation_space, dummy_env.action_space, int(online_buffer_size))
     replay_buffer = online_replay_buffer
     replay_buffer.seed(variant.seed)
-    trajwise_alternating_training_loop(variant, agent, env, eval_env, online_replay_buffer, replay_buffer, wandb_logger, shard_fn=shard_fn, agent_dp=agent_dp, robot_config=robot_config)
+    trajwise_alternating_training_loop(
+        variant,
+        agent,
+        env,
+        eval_env,
+        online_replay_buffer,
+        replay_buffer,
+        wandb_logger,
+        shard_fn=shard_fn,
+        policy_service=policy_service,
+        robot_io=robot_io,
+    )
  
