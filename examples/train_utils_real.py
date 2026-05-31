@@ -1,19 +1,19 @@
 import os
 import time
-from tqdm import tqdm
-import time
-import numpy as np
-import jax
-import sys
 import select
-import tty
+import sys
 import termios
+import tty
+
+import jax
+import numpy as np
 from openpi_client import image_tools
 from moviepy.editor import ImageSequenceClip
+from tqdm import tqdm
 
 
 def trajwise_alternating_training_loop(variant, agent, env, eval_env, online_replay_buffer, replay_buffer, wandb_logger,
-                                       shard_fn=None, agent_dp=None, robot_config=None):
+                                       shard_fn=None, policy_service=None, robot_io=None):
     replay_buffer_iterator = replay_buffer.get_iterator(variant.batch_size)
     if shard_fn is not None:
         replay_buffer_iterator = map(shard_fn, replay_buffer_iterator)
@@ -27,7 +27,16 @@ def trajwise_alternating_training_loop(variant, agent, env, eval_env, online_rep
    
     with tqdm(total=variant.max_steps, initial=0) as pbar:
         while i <= variant.max_steps:
-            traj = collect_traj(variant, agent, env, i, agent_dp, wandb_logger, total_num_traj, robot_config)
+            traj = collect_traj(
+                variant,
+                agent,
+                env,
+                i,
+                policy_service=policy_service,
+                wandb_logger=wandb_logger,
+                traj_id=total_num_traj,
+                robot_io=robot_io,
+            )
             total_num_traj += 1
             add_online_data_to_buffer(variant, traj, online_replay_buffer)
             total_env_steps += traj['env_steps']
@@ -102,11 +111,13 @@ def add_online_data_to_buffer(variant, traj, online_replay_buffer):
         online_replay_buffer.insert(insert_dict)
     online_replay_buffer.increment_traj_counter()
 
-def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None, traj_id=None, robot_config=None):
+def collect_traj(variant, agent, env, i, policy_service=None, wandb_logger=None, traj_id=None, robot_io=None):
     query_frequency = variant.query_freq
     instruction = variant.instruction
-    max_timesteps = robot_config['max_timesteps']
+    runtime_config = robot_io.runtime_config
+    max_timesteps = runtime_config.max_timesteps
     agent._rng, rng = jax.random.split(agent._rng)
+    is_success = False
     try:
         env.reset()
     except Exception as e:
@@ -114,7 +125,7 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None, traj_
         import traceback
         traceback.print_exc() 
         import pdb; pdb.set_trace()
-    step_time = 1 / 15 # 15 Hz
+    step_time = 1 / runtime_config.control_frequency_hz
     last_step_time = time.time()
     old_settings = termios.tcgetattr(sys.stdin)
     
@@ -142,12 +153,12 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None, traj_
                 traceback.print_exc()
                 import pdb; pdb.set_trace()
             curr_obs = _extract_observation(
-                    robot_config,
+                    runtime_config,
                     _env_obs,
             )
-            image_list.append(curr_obs[robot_config['camera_to_use'] + "_image"])
+            image_list.append(curr_obs[runtime_config.camera_to_use + "_image"])
 
-            request_data = get_pi0_input(curr_obs, robot_config, instruction)
+            request_data = get_pi0_input(curr_obs, runtime_config, instruction)
         
             if t % query_frequency == 0:
 
@@ -156,7 +167,7 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None, traj_
                 img_all = process_images(variant, curr_obs)
                 
                 # extract the feature from the pi0 VLM backbone and concat with the qpos as states
-                img_rep_pi0, _ = agent_dp.get_prefix_rep(request_data)
+                img_rep_pi0, _ = policy_service.get_prefix_rep(request_data)
                 img_rep_pi0 = img_rep_pi0[:, -1, :] # (1, 2048)
                 qpos = np.concatenate([curr_obs["joint_position"], curr_obs["gripper_position"], img_rep_pi0.flatten()])
 
@@ -177,7 +188,7 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None, traj_
                     noise = jax.numpy.concatenate([actions_noise, noise], axis=0)[None]
                 action_list.append(actions_noise)
                 obs_list.append(obs_dict)
-                action = agent_dp.infer(request_data, noise=np.asarray(noise))["actions"]
+                action = policy_service.infer(request_data, noise=np.asarray(noise))["actions"]
 
             action_t = action[t % query_frequency]
             
@@ -230,13 +241,13 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None, traj_
         
         # add last observation
         curr_obs = _extract_observation(
-                    robot_config,
+                    runtime_config,
                     _env_obs,
             )
-        image_list.append(curr_obs[robot_config['camera_to_use'] + "_image"])
-        request_data = get_pi0_input(curr_obs, robot_config, instruction)
+        image_list.append(curr_obs[runtime_config.camera_to_use + "_image"])
+        request_data = get_pi0_input(curr_obs, runtime_config, instruction)
         img_all = process_images(variant, curr_obs)
-        img_rep_pi0, _ = agent_dp.get_prefix_rep(request_data)
+        img_rep_pi0, _ = policy_service.get_prefix_rep(request_data)
         img_rep_pi0 = img_rep_pi0[:, -1, :] # (1, 2048)
         qpos = np.concatenate([curr_obs["joint_position"], curr_obs["gripper_position"], img_rep_pi0.flatten()])
         obs_dict = {
@@ -272,7 +283,6 @@ def collect_traj(variant, agent, env, i, agent_dp=None, wandb_logger=None, traj_
             import traceback
             traceback.print_exc()  # This prints the full traceback
             import pdb; pdb.set_trace()
-        import pdb; pdb.set_trace()
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
     
     traj = {
@@ -294,11 +304,11 @@ def _extract_observation(robot_config, obs_dict):
     image_observations = obs_dict["image"]
     left_image, right_image, wrist_image = None, None, None
     for key in image_observations.keys():
-        if robot_config['left_camera_id'] in key and "left" in key:
+        if robot_config.left_camera_id in key and "left" in key:
             left_image = image_observations[key]
-        elif robot_config['right_camera_id'] in key and "left" in key:
+        elif robot_config.right_camera_id in key and "left" in key:
             right_image = image_observations[key]
-        elif robot_config['wrist_camera_id'] in key and "left" in key:
+        elif robot_config.wrist_camera_id in key and "left" in key:
             wrist_image = image_observations[key]
 
     # Drop the alpha dimension
@@ -327,7 +337,7 @@ def _extract_observation(robot_config, obs_dict):
     }
     
 def get_pi0_input(obs, robot_config, instruction):
-    external_image = obs[robot_config['camera_to_use'] + "_image"]
+    external_image = obs[robot_config.camera_to_use + "_image"]
     request_data = {
         "observation/exterior_image_1_left": image_tools.resize_with_pad(
             external_image, 224, 224
