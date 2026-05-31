@@ -26,6 +26,15 @@ if __name__ == '__main__':
     parser.add_argument('--resize_image', default=-1, help='the size of image if need resizing', type=int)
     parser.add_argument('--query_freq', default=-1, help='query frequency', type=int)
     parser.add_argument('--instruction', default='put the spoon on the plate', help='language instruction for the robot')
+    parser.add_argument('--restore_path', default='', help='optional checkpoint path to restore before real-world training')
+    parser.add_argument('--policy_host', default='127.0.0.1', help='OpenPI policy server host')
+    parser.add_argument('--policy_port', default=8000, help='OpenPI policy server port', type=int)
+    parser.add_argument('--external_camera', default='right', choices=['left', 'right'], help='external camera feed to use for policy inputs')
+    parser.add_argument('--left_camera_id', required=True, help='DROID left external camera ID')
+    parser.add_argument('--right_camera_id', required=True, help='DROID right external camera ID')
+    parser.add_argument('--wrist_camera_id', required=True, help='DROID wrist camera ID')
+    parser.add_argument('--max_rollout_steps', default=200, help='max robot-control steps per trajectory', type=int)
+    parser.add_argument('--control_frequency_hz', default=15, help='target DROID control frequency for real rollouts', type=int)
     
     # The hyperparameters for the real robot experiments
     train_args_dict = dict(

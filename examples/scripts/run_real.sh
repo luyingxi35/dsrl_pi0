@@ -6,14 +6,19 @@ export EXP=./logs/$proj_name;
 export CUDA_VISIBLE_DEVICES=$device_id
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
-# Fill inFranka Droid camera IDs
-export LEFT_CAMERA_ID=""
-export RIGHT_CAMERA_ID=""
-export WRIST_CAMERA_ID=""
+# DROID-aligned runtime topology:
+#   NUC                -> Franka + Polymetis + DROID ZeroRPC robot server
+#   laptop/workstation -> DROID client + cameras + DSRL steering loop
+#   GPU server         -> OpenPI websocket policy server
 
-# Fill inpi0 remote host and port
-export remote_host=""
-export remote_port=""
+# Fill in Franka DROID camera IDs on the laptop/workstation.
+LEFT_CAMERA_ID=""
+RIGHT_CAMERA_ID=""
+WRIST_CAMERA_ID=""
+
+# Fill in OpenPI policy server host and port.
+POLICY_HOST=""
+POLICY_PORT="8000"
 
 
 python3 examples/launch_train_real.py \
@@ -32,4 +37,10 @@ python3 examples/launch_train_real.py \
 --action_magnitude 2.5 \
 --query_freq 10 \
 --hidden_dims 1024 \
---num_qs 2 
+--num_qs 2 \
+--external_camera right \
+--left_camera_id "${LEFT_CAMERA_ID}" \
+--right_camera_id "${RIGHT_CAMERA_ID}" \
+--wrist_camera_id "${WRIST_CAMERA_ID}" \
+--policy_host "${POLICY_HOST}" \
+--policy_port "${POLICY_PORT}"

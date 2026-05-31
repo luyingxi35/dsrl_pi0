@@ -69,13 +69,20 @@ We provide sample W&B runs and logs: https://wandb.ai/mitsuhiko/DSRL_pi0_public
 ## Training (Real)
 For real-world experiments, we use the remote hosting feature from pi0 (see [here](https://github.com/Physical-Intelligence/openpi/blob/main/docs/remote_inference.md)) which enables us to host the pi0 model on a higher-spec remote server, in case the robot's client machine is not powerful enough. 
 
-0. Setup Franka robot and install DROID package [[link](https://github.com/droid-dataset/droid.git)]
+0. Setup Franka robot and install DROID package [[link](https://github.com/droid-dataset/droid.git)].
+   The aligned runtime is:
+   - NUC: Franka + Polymetis + DROID robot server
+   - Laptop/workstation: DROID client, cameras, and the DSRL steering loop
+   - Remote GPU server: OpenPI policy server
 
-1. [On the remote server] Host pi0 droid model on your remote server
+1. [On the NUC] Start the DROID robot server so robot control stays on the NUC as in DROID.
+
+2. [On the remote GPU server] Host the pi0 DROID model:
 ```
 cd openpi && python scripts/serve_policy.py --env=DROID
 ```
-2. [On your robot client machine] Run DSRL
+
+3. [On the robot laptop/workstation] Fill in camera IDs and remote policy host/port in `examples/scripts/run_real.sh`, then run DSRL:
 ```
 bash examples/scripts/run_real.sh
 ```
