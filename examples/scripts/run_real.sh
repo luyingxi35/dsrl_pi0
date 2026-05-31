@@ -12,12 +12,15 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 #   GPU server         -> OpenPI websocket policy server
 
 # Fill in Franka DROID camera IDs on the laptop/workstation.
-LEFT_CAMERA_ID=""
-RIGHT_CAMERA_ID=""
-WRIST_CAMERA_ID=""
+# If you only have one side/external camera, set LEFT_CAMERA_ID and
+# RIGHT_CAMERA_ID to the same side camera serial. RealSense IDs can be
+# either the raw serial or realsense_<serial>.
+LEFT_CAMERA_ID="241122302552"
+RIGHT_CAMERA_ID="241122302552"
+WRIST_CAMERA_ID="17396664"
 
 # Fill in OpenPI policy server host and port.
-POLICY_HOST=""
+POLICY_HOST="127.0.0.1"
 POLICY_PORT="8000"
 
 
