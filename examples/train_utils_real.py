@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 
 def trajwise_alternating_training_loop(variant, agent, env, eval_env, online_replay_buffer, replay_buffer, wandb_logger,
-                                       shard_fn=None, policy_service=None, robot_io=None):
+                                       shard_fn=None, policy_service=None, robot_io=None, obs_builder=None):
     replay_buffer_iterator = replay_buffer.get_iterator(variant.batch_size)
     if shard_fn is not None:
         replay_buffer_iterator = map(shard_fn, replay_buffer_iterator)
@@ -36,6 +36,7 @@ def trajwise_alternating_training_loop(variant, agent, env, eval_env, online_rep
                 wandb_logger=wandb_logger,
                 traj_id=total_num_traj,
                 robot_io=robot_io,
+                obs_builder=obs_builder,
             )
             total_num_traj += 1
             add_online_data_to_buffer(variant, traj, online_replay_buffer)
@@ -111,7 +112,8 @@ def add_online_data_to_buffer(variant, traj, online_replay_buffer):
         online_replay_buffer.insert(insert_dict)
     online_replay_buffer.increment_traj_counter()
 
-def collect_traj(variant, agent, env, i, policy_service=None, wandb_logger=None, traj_id=None, robot_io=None):
+def collect_traj(variant, agent, env, i, policy_service=None, wandb_logger=None, traj_id=None, robot_io=None,
+                 obs_builder=None):
     query_frequency = variant.query_freq
     instruction = variant.instruction
     runtime_config = robot_io.runtime_config
@@ -164,17 +166,13 @@ def collect_traj(variant, agent, env, i, policy_service=None, wandb_logger=None,
 
                 rng, key = jax.random.split(rng)
 
-                img_all = process_images(variant, curr_obs)
-                
-                # extract the feature from the pi0 VLM backbone and concat with the qpos as states
-                img_rep_pi0, _ = policy_service.get_prefix_rep(request_data)
-                img_rep_pi0 = img_rep_pi0[:, -1, :] # (1, 2048)
-                qpos = np.concatenate([curr_obs["joint_position"], curr_obs["gripper_position"], img_rep_pi0.flatten()])
-
-                obs_dict = {
-                    'pixels': img_all,
-                    'state': qpos[np.newaxis, ..., np.newaxis],
-                }
+                obs_dict = build_rl_observation(
+                    variant,
+                    curr_obs,
+                    request_data,
+                    policy_service,
+                    obs_builder=obs_builder,
+                )
                 if i == 0:
                     noise = jax.random.normal(key, (1, *agent.action_chunk_shape))
                     noise_repeat = jax.numpy.repeat(noise[:, -1:, :], 10 - noise.shape[1], axis=1)
@@ -246,14 +244,13 @@ def collect_traj(variant, agent, env, i, policy_service=None, wandb_logger=None,
             )
         image_list.append(curr_obs[runtime_config.camera_to_use + "_image"])
         request_data = get_pi0_input(curr_obs, runtime_config, instruction)
-        img_all = process_images(variant, curr_obs)
-        img_rep_pi0, _ = policy_service.get_prefix_rep(request_data)
-        img_rep_pi0 = img_rep_pi0[:, -1, :] # (1, 2048)
-        qpos = np.concatenate([curr_obs["joint_position"], curr_obs["gripper_position"], img_rep_pi0.flatten()])
-        obs_dict = {
-            'pixels': img_all,
-            'state': qpos[np.newaxis, ..., np.newaxis],
-        }
+        obs_dict = build_rl_observation(
+            variant,
+            curr_obs,
+            request_data,
+            policy_service,
+            obs_builder=obs_builder,
+        )
         obs_list.append(obs_dict)
         print(f'Rollout Done')
         
@@ -382,6 +379,23 @@ def get_pi0_input(obs, robot_config, instruction):
         "prompt": instruction,
     }
     return request_data
+
+
+def build_rl_observation(variant, curr_obs, request_data, policy_service, obs_builder=None):
+    if obs_builder is not None:
+        return obs_builder.build(curr_obs, request_data, policy_service)
+
+    img_all = process_images(variant, curr_obs)
+
+    # extract the feature from the pi0 VLM backbone and concat with the qpos as states
+    img_rep_pi0, _ = policy_service.get_prefix_rep(request_data)
+    img_rep_pi0 = img_rep_pi0[:, -1, :] # (1, 2048)
+    qpos = np.concatenate([curr_obs["joint_position"], curr_obs["gripper_position"], img_rep_pi0.flatten()])
+
+    return {
+        'pixels': img_all,
+        'state': qpos[np.newaxis, ..., np.newaxis],
+    }
     
 
 def process_images(variant, obs):
