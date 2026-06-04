@@ -2,7 +2,7 @@
 proj_name=DSRL_pi0_FrankaDroid
 device_id=0
 
-export EXP=./logs/$proj_name;
+export EXP=/home/robot/yingxi/dsrl_pi0/logs/$proj_name;
 export CUDA_VISIBLE_DEVICES=$device_id
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
@@ -11,12 +11,16 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 #   laptop/workstation -> DROID client + cameras + DSRL steering loop
 #   GPU server         -> OpenPI websocket policy server
 
+# Select which camera images are sent to the OpenPI policy request.
+# Wrist-only is the default for the 2440-D Wrist-DINO RL state.
+USE_WRIST_CAMERA=1
+USE_EXTERIOR_CAMERA=0
+
 # Fill in Franka DROID camera IDs on the laptop/workstation.
-# If you only have one side/external camera, set LEFT_CAMERA_ID and
-# RIGHT_CAMERA_ID to the same side camera serial. RealSense IDs can be
-# either the raw serial or realsense_<serial>.
-LEFT_CAMERA_ID="241122302552"
-RIGHT_CAMERA_ID="241122302552"
+# LEFT_CAMERA_ID/RIGHT_CAMERA_ID are only required when USE_EXTERIOR_CAMERA=1.
+# RealSense IDs can be either the raw serial or realsense_<serial>.
+LEFT_CAMERA_ID=""
+RIGHT_CAMERA_ID=""
 WRIST_CAMERA_ID="17396664"
 
 # Fill in OpenPI policy server host and port.
@@ -36,13 +40,23 @@ python3 examples/launch_train_real_dino.py \
 --eval_interval 2000 \
 --log_interval 100 \
 --multi_grad_step 30 \
---action_magnitude 2.5 \
---query_freq 10 \
+--action_magnitude 2.0 \
+--instruction 'pick the blue peg' \
+--query_freq 8 \
+--rl_noise_horizon 8 \
 --hidden_dims 1024 \
+--network_type transformer \
+--transformer_dim 256 \
+--transformer_depth 3 \
+--transformer_heads 4 \
+--transformer_mlp_dim 1024 \
+--transformer_dropout 0.0 \
 --num_qs 2 \
 --dino_model facebook/dinov2-small \
 --dino_device auto \
 --external_camera right \
+--use_wrist_camera "${USE_WRIST_CAMERA}" \
+--use_exterior_camera "${USE_EXTERIOR_CAMERA}" \
 --left_camera_id "${LEFT_CAMERA_ID}" \
 --right_camera_id "${RIGHT_CAMERA_ID}" \
 --wrist_camera_id "${WRIST_CAMERA_ID}" \

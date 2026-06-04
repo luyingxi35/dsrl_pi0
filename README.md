@@ -98,6 +98,75 @@ bash examples/scripts/run_real_dino.sh
 ```
 This variant uses only the wrist camera for the RL steering policy image feature, featurized by `facebook/dinov2-small` into a 384-D CLS embedding. The full RL state is 2440-D: 7 joint positions, 1 gripper position, 2048-D pi0 VLM embedding, and 384-D DINO feature. The pi0 policy request still keeps its expected DROID inputs. The first run may download/cache the DINO-v2-small model through HuggingFace Transformers.
 
+## Real Policy Evaluation
+After training, evaluate real-world policies with the same three-machine runtime.
+
+1. [On the NUC] Start the DROID robot server:
+```
+cd ~/yingxi/droid
+conda activate polymetis-local
+
+python scripts/server/run_server.py
+```
+
+2. [On the remote GPU server] Start the OpenPI/pi0 policy server:
+```
+cd ~/yingxi/dsrl_pi0/openpi
+conda activate dsrl_pi0
+
+python scripts/serve_policy.py --env=DROID --port=8000
+```
+
+3. [On the robot laptop/workstation] Evaluate a trained DSRL checkpoint with the standalone GUI-based evaluator:
+```
+cd ~/yingxi/dsrl_pi0
+conda activate dsrl_pi0
+
+python3 examples/evaluate_policy_real.py \
+--restore_path ./logs/DSRL_pi0_FrankaDroid/<exp_name_with_checkpoints> \
+--instruction "put the spoon on the plate" \
+--eval_episodes 10 \
+--max_rollout_steps 200 \
+--query_freq 8 \
+--resize_image 128 \
+--control_frequency_hz 15 \
+--use_wrist_camera 1 \
+--use_exterior_camera 1 \
+--policy_host <GPU_SERVER_IP_OR_127.0.0.1> \
+--policy_port 8000 \
+--outputdir ./logs/policy_eval_real \
+--seed 0 \
+--add_states 1 \
+--hidden_dims 1024 \
+--num_qs 2 \
+--action_magnitude 2.0
+```
+The evaluator opens a Tkinter GUI with live wrist and exterior-camera previews. Camera serial IDs are hardcoded in the evaluator (`17396664` for Zed Mini wrist, `241122302552` for RealSense exterior); the command only chooses whether each camera is used. Click `Start next` to begin each rollout, click `Success` or `Failure` to label the trajectory, or let the rollout timeout to mark it as failure automatically. Each labeled rollout triggers `env.reset()` and then waits for the next `Start next`. Results are written to `eval_results.csv`, and videos are saved as `eval_video_<episode_id>.mp4` in `--outputdir`.
+
+To evaluate the pi0 policy alone with wrist-camera observations only, keep the NUC and GPU server commands above running and use:
+```
+cd ~/yingxi/dsrl_pi0
+conda activate dsrl_pi0
+
+python3 examples/evaluate_pi0_real.py \
+--instruction "Insert the peg into the hole." \
+--eval_episodes 15 \
+--max_rollout_steps 400 \
+--query_freq 8 \
+--control_frequency_hz 10 \
+--use_wrist_camera 1 \
+--use_exterior_camera 0 \
+--policy_host 127.0.0.1 \
+--policy_port 8000 \
+--outputdir ./logs/pi0_eval_real
+```
+This pi0-only evaluator does not load a DSRL checkpoint or send RL noise. With `--use_wrist_camera 1 --use_exterior_camera 0`, it sends one real wrist image to OpenPI and leaves the other model image slots masked out. To evaluate with a Zed Mini wrist camera plus a RealSense exterior view, run with:
+```
+--use_wrist_camera 1 \
+--use_exterior_camera 1
+```
+For exterior-only evaluation, use `--use_wrist_camera 0 --use_exterior_camera 1`. In all cases, only enabled real cameras are sent to OpenPI: RealSense exterior maps to `observation/exterior_image_1_left`, Zed wrist maps to `observation/wrist_image_left`, and absent DROID image slots remain masked out. Restart the OpenPI policy server after updating this repository so the empty-slot transform is loaded.
+
 ## Test
 1. Test observation:
 On the NUC: 
@@ -109,15 +178,11 @@ python scripts/server/run_server.py
 On GPU server:
 ```
 cd ~/yingxi/dsrl_pi0/openpi
+conda activate dsrl_pi0
 python scripts/serve_policy.py --env=DROID --port=8000
 ```
 On the workstation:
 ```
-# Adjust camera ID and policy host
-cd ~/yingxi/dsrl_pi0
-nano examples/scripts/check_real_dino_obs.sh
-
-# Run obs preflight
 bash examples/scripts/check_real_dino_obs.sh
 ```
 

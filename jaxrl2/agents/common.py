@@ -28,6 +28,15 @@ def _unpack(batch):
 
     return batch
 
+
+def _flatten_actions_for_distribution(dist: distrax.Distribution, actions: jnp.ndarray) -> jnp.ndarray:
+    loc = dist.distribution._loc if hasattr(dist, 'distribution') else dist.loc
+    if actions.shape == loc.shape:
+        return actions
+    if actions.ndim >= 3 and actions.shape[:-2] == loc.shape[:-1] and np.prod(actions.shape[-2:]) == loc.shape[-1]:
+        return jnp.reshape(actions, loc.shape)
+    return actions
+
 @partial(jax.jit, static_argnames='actor_apply_fn')
 def eval_log_prob_jit(actor_apply_fn: Callable[..., distrax.Distribution],
                       actor_params: Params, actor_batch_stats: Any, batch: DatasetDict) -> float:
@@ -39,7 +48,8 @@ def eval_log_prob_jit(actor_apply_fn: Callable[..., distrax.Distribution],
                           batch['observations'],
                           training=False,
                           mutable=False)
-    log_probs = dist.log_prob(batch['actions'])
+    actions = _flatten_actions_for_distribution(dist, batch['actions'])
+    log_probs = dist.log_prob(actions)
     return log_probs.mean()
 
 @partial(jax.jit, static_argnames='actor_apply_fn')
@@ -53,7 +63,8 @@ def eval_mse_jit(actor_apply_fn: Callable[..., distrax.Distribution],
                           batch['observations'],
                           training=False,
                           mutable=False)
-    mse = (dist.loc - batch['actions']) ** 2
+    actions = _flatten_actions_for_distribution(dist, batch['actions'])
+    mse = (dist.mode() - actions) ** 2
     return mse.mean()
 
 def eval_reward_function_jit(actor_apply_fn: Callable[..., distrax.Distribution],
