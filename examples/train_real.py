@@ -40,6 +40,7 @@ class RobotRuntimeConfig:
     wrist_camera_id: str
     max_timesteps: int
     control_frequency_hz: int = DEFAULT_DROID_CONTROL_FREQUENCY
+    allow_missing_cameras: bool = False
 
     @property
     def camera_to_use(self) -> str:
@@ -52,12 +53,12 @@ class RobotRuntimeConfig:
             "wrist_camera_id": self.wrist_camera_id,
         }
         missing = [name for name, value in camera_ids.items() if not value]
-        if missing:
+        if missing and not (self.allow_missing_cameras and any(camera_ids.values())):
             raise ValueError(
                 "DROID camera IDs must be set before running real rollouts. "
                 f"Missing: {', '.join(missing)}. Fill these in examples/scripts/run_real.sh."
             )
-        if self.wrist_camera_id in {self.left_camera_id, self.right_camera_id}:
+        if self.wrist_camera_id and self.wrist_camera_id in {self.left_camera_id, self.right_camera_id}:
             raise ValueError(f"The wrist camera must be different from the external camera IDs: {camera_ids}")
 
 
@@ -102,7 +103,11 @@ class RobotIO:
             (self._runtime_config.right_camera_id, "right external"),
             (self._runtime_config.wrist_camera_id, "wrist"),
         ]
-        missing = [label for cam_id, label in required_cameras if not _has_camera_image(image_observations, cam_id)]
+        missing = [
+            label
+            for cam_id, label in required_cameras
+            if cam_id and not _has_camera_image(image_observations, cam_id)
+        ]
         if missing:
             raise RuntimeError(
                 "DROID camera preflight failed. Missing image feeds for: "
@@ -112,16 +117,28 @@ class RobotIO:
 
 
 def _has_camera_image(image_observations, camera_id: str) -> bool:
-    candidates = {camera_id}
-    if camera_id.startswith("realsense_"):
-        candidates.add(camera_id.removeprefix("realsense_"))
-    else:
-        candidates.add(f"realsense_{camera_id}")
+    if not camera_id:
+        return False
+    candidates = _camera_id_candidates(camera_id)
     return any(
         key == candidate or key.startswith(f"{candidate}_")
         for key in image_observations.keys()
         for candidate in candidates
     )
+
+
+def _camera_id_candidates(camera_id: str) -> set[str]:
+    camera_id = str(camera_id)
+    prefixes = ("realsense_", "zedmini_", "zed_mini_", "zed_")
+    serial = camera_id
+    for prefix in prefixes:
+        if serial.startswith(prefix):
+            serial = serial.removeprefix(prefix)
+            break
+    candidates = {camera_id, serial}
+    candidates.update(f"{prefix}{serial}" for prefix in prefixes)
+    return candidates
+
 
 def shard_batch(batch, sharding):
     """Shards a batch across devices along its first dimension.
