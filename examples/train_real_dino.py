@@ -27,6 +27,7 @@ DEFAULT_DROID_CONTROL_FREQUENCY = 15
 PROPRIO_DIM = 8
 PI0_VLM_EMBED_DIM = 2048
 DINO_V2_SMALL_CLS_DIM = 384
+PI0_NOISE_DIM = 32
 STATE_DIM = PROPRIO_DIM + PI0_VLM_EMBED_DIM + DINO_V2_SMALL_CLS_DIM
 
 
@@ -44,10 +45,22 @@ class RobotRuntimeConfig:
     wrist_camera_id: str
     max_timesteps: int
     control_frequency_hz: int = DEFAULT_DROID_CONTROL_FREQUENCY
+    use_wrist_camera: bool = True
+    use_exterior_camera: bool = False
+    allow_missing_cameras: bool = True
+    require_wrist_camera: bool = True
 
     @property
     def camera_to_use(self) -> str:
         return self.external_camera
+
+    @property
+    def selected_exterior_camera_id(self) -> str:
+        if self.external_camera == "left":
+            return self.left_camera_id
+        if self.external_camera == "right":
+            return self.right_camera_id
+        raise ValueError(f"Unsupported external_camera={self.external_camera!r}.")
 
     def validate(self) -> None:
         camera_ids = {
@@ -55,13 +68,17 @@ class RobotRuntimeConfig:
             "right_camera_id": self.right_camera_id,
             "wrist_camera_id": self.wrist_camera_id,
         }
-        missing = [name for name, value in camera_ids.items() if not value]
-        if missing:
+        if not self.use_wrist_camera and not self.use_exterior_camera:
+            raise ValueError("At least one of --use_wrist_camera or --use_exterior_camera must be enabled.")
+        if not self.wrist_camera_id:
             raise ValueError(
-                "DROID camera IDs must be set before running real rollouts. "
-                f"Missing: {', '.join(missing)}. Fill these in examples/scripts/run_real_dino.sh."
+                "DINO real training requires --wrist_camera_id because the RL state uses wrist DINO features."
             )
-        if self.wrist_camera_id in {self.left_camera_id, self.right_camera_id}:
+        if self.use_exterior_camera and not self.selected_exterior_camera_id:
+            raise ValueError(
+                f"--use_exterior_camera=1 requires --{self.external_camera}_camera_id to be set."
+            )
+        if self.use_exterior_camera and self.wrist_camera_id == self.selected_exterior_camera_id:
             raise ValueError(f"The wrist camera must be different from the external camera IDs: {camera_ids}")
 
 
@@ -101,12 +118,16 @@ class RobotIO:
     def preflight(self):
         obs = self._env.get_observation()
         image_observations = obs["image"]
-        required_cameras = [
-            (self._runtime_config.left_camera_id, "left external"),
-            (self._runtime_config.right_camera_id, "right external"),
-            (self._runtime_config.wrist_camera_id, "wrist"),
+        required_cameras = [(self._runtime_config.wrist_camera_id, "wrist")]
+        if self._runtime_config.use_exterior_camera:
+            required_cameras.append(
+                (self._runtime_config.selected_exterior_camera_id, f"{self._runtime_config.external_camera} external")
+            )
+        missing = [
+            label
+            for cam_id, label in required_cameras
+            if cam_id and not _has_camera_image(image_observations, cam_id)
         ]
-        missing = [label for cam_id, label in required_cameras if not _has_camera_image(image_observations, cam_id)]
         if missing:
             raise RuntimeError(
                 "DROID camera preflight failed. Missing image feeds for: "
@@ -116,16 +137,46 @@ class RobotIO:
 
 
 def _has_camera_image(image_observations, camera_id: str) -> bool:
-    candidates = {camera_id}
-    if camera_id.startswith("realsense_"):
-        candidates.add(camera_id.removeprefix("realsense_"))
-    else:
-        candidates.add(f"realsense_{camera_id}")
+    if not camera_id:
+        return False
+    candidates = _camera_id_candidates(camera_id)
     return any(
         key == candidate or key.startswith(f"{candidate}_")
         for key in image_observations.keys()
         for candidate in candidates
     )
+
+
+def _camera_id_candidates(camera_id: str) -> set[str]:
+    camera_id = str(camera_id)
+    prefixes = ("realsense_", "zedmini_", "zed_mini_", "zed_")
+    serial = camera_id
+    for prefix in prefixes:
+        if serial.startswith(prefix):
+            serial = serial.removeprefix(prefix)
+            break
+    candidates = {camera_id, serial}
+    candidates.update(f"{prefix}{serial}" for prefix in prefixes)
+    return candidates
+
+
+def _validate_policy_metadata(metadata, expected_horizon: int, expected_action_dim: int) -> None:
+    missing = [key for key in ("action_horizon", "action_dim") if key not in metadata]
+    if missing:
+        raise RuntimeError(
+            "OpenPI policy server metadata is missing "
+            f"{', '.join(missing)}. Restart the policy server from this repo so "
+            "the RL noise shape can be validated before real rollouts."
+        )
+
+    action_horizon = int(metadata["action_horizon"])
+    action_dim = int(metadata["action_dim"])
+    if action_horizon != expected_horizon or action_dim != expected_action_dim:
+        raise RuntimeError(
+            "OpenPI policy server action shape does not match RL noise shape: "
+            f"server=({action_horizon}, {action_dim}), "
+            f"RL=({expected_horizon}, {expected_action_dim})."
+        )
 
 
 def shard_batch(batch, sharding):
@@ -206,10 +257,17 @@ class DummyEnv(gym.ObservationWrapper):
             'state': Box(low=-np.inf, high=np.inf, shape=(STATE_DIM, 1), dtype=np.float32),
         }
         self.observation_space = Dict(obs_dict)
-        self.action_space = Box(low=-1, high=1, shape=(1, 32,), dtype=np.float32)
+        self.action_space = Box(low=-1, high=1, shape=(variant.rl_noise_horizon, PI0_NOISE_DIM), dtype=np.float32)
 
 
 def main(variant):
+    if variant.query_freq <= 0:
+        raise ValueError(f"--query_freq must be positive, got {variant.query_freq}.")
+    if variant.query_freq > variant.rl_noise_horizon:
+        raise ValueError(
+            f"--query_freq ({variant.query_freq}) must be <= --rl_noise_horizon ({variant.rl_noise_horizon})."
+        )
+
     devices = jax.local_devices()
     num_devices = len(devices)
     assert variant.batch_size % num_devices == 0
@@ -258,7 +316,8 @@ def main(variant):
         port=variant.policy_port,
     )
     policy_service = PolicyService(policy_config)
-    policy_service.preflight()
+    policy_metadata = policy_service.preflight()
+    _validate_policy_metadata(policy_metadata, variant.rl_noise_horizon, PI0_NOISE_DIM)
 
     runtime_config = RobotRuntimeConfig(
         external_camera=variant.external_camera,
@@ -267,6 +326,9 @@ def main(variant):
         wrist_camera_id=variant.wrist_camera_id,
         max_timesteps=variant.max_rollout_steps,
         control_frequency_hz=variant.control_frequency_hz,
+        use_wrist_camera=bool(variant.use_wrist_camera),
+        use_exterior_camera=bool(variant.use_exterior_camera),
+        allow_missing_cameras=True,
     )
     runtime_config.validate()
     logging.info("Initializing DROID client runtime...")
