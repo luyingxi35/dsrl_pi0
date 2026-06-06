@@ -92,6 +92,34 @@ cd openpi && python scripts/serve_policy.py --env=DROID
 bash examples/scripts/run_real.sh
 ```
 
+For the Wrist-DINO state-only real-world variant, fill in the camera IDs and remote policy host/port in `examples/scripts/run_real_dino.sh`, then run:
+```
+bash examples/scripts/run_real_dino.sh
+```
+This variant uses only the wrist camera for the RL steering policy image feature, featurized by `facebook/dinov2-small` into a 384-D CLS embedding. The full RL state is 2440-D: 7 joint positions, 1 gripper position, 2048-D pi0 VLM embedding, and 384-D DINO feature. The pi0 policy request still keeps its expected DROID inputs. The first run may download/cache the DINO-v2-small model through HuggingFace Transformers.
+
+## Test
+1. Test observation:
+On the NUC: 
+```
+cd ~/yingxi/droid
+conda activate polymetis-local
+python scripts/server/run_server.py
+```
+On GPU server:
+```
+cd ~/yingxi/dsrl_pi0/openpi
+python scripts/serve_policy.py --env=DROID --port=8000
+```
+On the workstation:
+```
+# Adjust camera ID and policy host
+cd ~/yingxi/dsrl_pi0
+nano examples/scripts/check_real_dino_obs.sh
+
+# Run obs preflight
+bash examples/scripts/check_real_dino_obs.sh
+```
 
 ## Credits
 This repository is built upon [jaxrl2](https://github.com/ikostrikov/jaxrl2) and [PTR](https://github.com/Asap7772/PTR) repositories. 
