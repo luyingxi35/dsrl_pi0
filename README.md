@@ -76,6 +76,11 @@ For real-world experiments, we use the remote hosting feature from pi0 (see [her
    - Remote GPU server: OpenPI policy server
 
 1. [On the NUC] Start the DROID robot server so robot control stays on the NUC as in DROID.
+```
+cd ~/yingxi/droid
+conda activate polymetis-local
+python scripts/server/run_server.py
+```
 
 2. [On the remote GPU server] Host the pi0 DROID model:
 ```

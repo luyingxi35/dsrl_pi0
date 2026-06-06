@@ -45,6 +45,21 @@ class RobotRuntimeConfig:
     def camera_to_use(self) -> str:
         return self.external_camera
 
+    def validate(self) -> None:
+        camera_ids = {
+            "left_camera_id": self.left_camera_id,
+            "right_camera_id": self.right_camera_id,
+            "wrist_camera_id": self.wrist_camera_id,
+        }
+        missing = [name for name, value in camera_ids.items() if not value]
+        if missing:
+            raise ValueError(
+                "DROID camera IDs must be set before running real rollouts. "
+                f"Missing: {', '.join(missing)}. Fill these in examples/scripts/run_real.sh."
+            )
+        if self.wrist_camera_id in {self.left_camera_id, self.right_camera_id}:
+            raise ValueError(f"The wrist camera must be different from the external camera IDs: {camera_ids}")
+
 
 class PolicyService:
     def __init__(self, config: PolicyServerConfig):
@@ -82,22 +97,31 @@ class RobotIO:
     def preflight(self):
         obs = self._env.get_observation()
         image_observations = obs["image"]
-        required_cameras = {
-            self._runtime_config.left_camera_id: "left external",
-            self._runtime_config.right_camera_id: "right external",
-            self._runtime_config.wrist_camera_id: "wrist",
-        }
-        missing = [label for cam_id, label in required_cameras.items() if not _has_left_camera(image_observations, cam_id)]
+        required_cameras = [
+            (self._runtime_config.left_camera_id, "left external"),
+            (self._runtime_config.right_camera_id, "right external"),
+            (self._runtime_config.wrist_camera_id, "wrist"),
+        ]
+        missing = [label for cam_id, label in required_cameras if not _has_camera_image(image_observations, cam_id)]
         if missing:
             raise RuntimeError(
-                "DROID camera preflight failed. Missing left-view feeds for: "
+                "DROID camera preflight failed. Missing image feeds for: "
                 + ", ".join(missing)
             )
         return obs
 
 
-def _has_left_camera(image_observations, camera_id: str) -> bool:
-    return any(camera_id in key and "left" in key for key in image_observations.keys())
+def _has_camera_image(image_observations, camera_id: str) -> bool:
+    candidates = {camera_id}
+    if camera_id.startswith("realsense_"):
+        candidates.add(camera_id.removeprefix("realsense_"))
+    else:
+        candidates.add(f"realsense_{camera_id}")
+    return any(
+        key == candidate or key.startswith(f"{candidate}_")
+        for key in image_observations.keys()
+        for candidate in candidates
+    )
 
 def shard_batch(batch, sharding):
     """Shards a batch across devices along its first dimension.
@@ -177,6 +201,7 @@ def main(variant):
         max_timesteps=variant.max_rollout_steps,
         control_frequency_hz=variant.control_frequency_hz,
     )
+    runtime_config.validate()
     logging.info("Initializing DROID client runtime...")
     robot_io = RobotIO(runtime_config)
     robot_io.preflight()

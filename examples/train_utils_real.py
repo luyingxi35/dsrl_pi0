@@ -302,14 +302,26 @@ def _extract_observation(robot_config, obs_dict):
     from https://github.com/Physical-Intelligence/openpi/blob/main/examples/droid/main.py
     '''
     image_observations = obs_dict["image"]
-    left_image, right_image, wrist_image = None, None, None
-    for key in image_observations.keys():
-        if robot_config.left_camera_id in key and "left" in key:
-            left_image = image_observations[key]
-        elif robot_config.right_camera_id in key and "left" in key:
-            right_image = image_observations[key]
-        elif robot_config.wrist_camera_id in key and "left" in key:
-            wrist_image = image_observations[key]
+    left_image = _find_camera_image(image_observations, robot_config.left_camera_id)
+    right_image = _find_camera_image(image_observations, robot_config.right_camera_id)
+    wrist_image = _find_camera_image(image_observations, robot_config.wrist_camera_id)
+
+    missing = [
+        name
+        for name, image in (
+            ("left_image", left_image),
+            ("right_image", right_image),
+            ("wrist_image", wrist_image),
+        )
+        if image is None
+    ]
+    if missing:
+        raise RuntimeError(
+            "Missing DROID camera images: "
+            + ", ".join(missing)
+            + f". Available image keys: {sorted(image_observations.keys())}. "
+            "Check LEFT_CAMERA_ID, RIGHT_CAMERA_ID, and WRIST_CAMERA_ID in examples/scripts/run_real.sh."
+        )
 
     # Drop the alpha dimension
     left_image = left_image[..., :3]
@@ -335,6 +347,28 @@ def _extract_observation(robot_config, obs_dict):
         "joint_position": joint_position,
         "gripper_position": gripper_position,
     }
+
+
+def _find_camera_image(image_observations, camera_id):
+    candidates = {camera_id}
+    if camera_id.startswith("realsense_"):
+        candidates.add(camera_id.removeprefix("realsense_"))
+    else:
+        candidates.add(f"realsense_{camera_id}")
+
+    matches = []
+    for key, image in image_observations.items():
+        if any(key == candidate or key.startswith(f"{candidate}_") for candidate in candidates):
+            matches.append((key, image))
+
+    if not matches:
+        return None
+
+    left_view = [image for key, image in matches if key.endswith("_left") or "left" in key]
+    if left_view:
+        return left_view[0]
+
+    return matches[0][1]
     
 def get_pi0_input(obs, robot_config, instruction):
     external_image = obs[robot_config.camera_to_use + "_image"]
