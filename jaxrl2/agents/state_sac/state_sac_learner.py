@@ -20,7 +20,9 @@ from jaxrl2.agents.state_sac.temperature import Temperature
 from jaxrl2.agents.state_sac.temperature_updater import update_temperature
 from jaxrl2.data.dataset import DatasetDict
 from jaxrl2.networks.learned_std_normal_policy import LearnedStdTanhNormalPolicy
+from jaxrl2.networks.learned_std_normal_policy import TransformerTanhNormalPolicy
 from jaxrl2.networks.values import StateActionEnsemble
+from jaxrl2.networks.values import StateActionTransformerEnsemble
 from jaxrl2.types import Params, PRNGKey
 from jaxrl2.utils.target_update import soft_target_update
 
@@ -83,12 +85,19 @@ class StateSACLearner(Agent):
                  init_temperature: float = 1.0,
                  num_qs: int = 2,
                  target_entropy: float = None,
-                 action_magnitude: float = 1.0):
-        self.action_dim = np.prod(actions.shape[-2:])
+                 action_magnitude: float = 1.0,
+                 network_type: str = 'mlp',
+                 transformer_dim: int = 256,
+                 transformer_depth: int = 3,
+                 transformer_heads: int = 4,
+                 transformer_mlp_dim: int = 1024,
+                 transformer_dropout: float = 0.0):
+        self.action_dim = int(np.prod(actions.shape[-2:]))
         self.action_chunk_shape = actions.shape[-2:]
         self.discount = discount
         self.tau = tau
         self.critic_reduction = critic_reduction
+        self.network_type = network_type
 
         rng = jax.random.PRNGKey(seed)
         rng, actor_key, critic_key, temp_key = jax.random.split(rng, 4)
@@ -99,13 +108,30 @@ class StateSACLearner(Agent):
         if len(hidden_dims) == 1:
             hidden_dims = (hidden_dims[0], hidden_dims[0], hidden_dims[0])
 
-        policy_def = LearnedStdTanhNormalPolicy(
-            hidden_dims,
-            self.action_dim,
-            dropout_rate=dropout_rate,
-            low=-action_magnitude,
-            high=action_magnitude,
-        )
+        if network_type == 'mlp':
+            policy_def = LearnedStdTanhNormalPolicy(
+                hidden_dims,
+                self.action_dim,
+                dropout_rate=dropout_rate,
+                low=-action_magnitude,
+                high=action_magnitude,
+            )
+        elif network_type == 'transformer':
+            if len(self.action_chunk_shape) != 2:
+                raise ValueError(f"Transformer SAC expects 2D action chunks, got {self.action_chunk_shape}.")
+            policy_def = TransformerTanhNormalPolicy(
+                action_horizon=int(self.action_chunk_shape[0]),
+                action_dim_per_step=int(self.action_chunk_shape[1]),
+                transformer_dim=transformer_dim,
+                transformer_depth=transformer_depth,
+                transformer_heads=transformer_heads,
+                transformer_mlp_dim=transformer_mlp_dim,
+                dropout_rate=transformer_dropout,
+                low=-action_magnitude,
+                high=action_magnitude,
+            )
+        else:
+            raise ValueError(f"Unsupported network_type: {network_type}")
         actor_params = policy_def.init(actor_key, observations)['params']
         actor = TrainState.create(
             apply_fn=policy_def.apply,
@@ -114,7 +140,19 @@ class StateSACLearner(Agent):
             batch_stats=None,
         )
 
-        critic_def = StateActionEnsemble(hidden_dims, num_qs=num_qs)
+        if network_type == 'mlp':
+            critic_def = StateActionEnsemble(hidden_dims, num_qs=num_qs)
+        else:
+            critic_def = StateActionTransformerEnsemble(
+                action_horizon=int(self.action_chunk_shape[0]),
+                action_dim_per_step=int(self.action_chunk_shape[1]),
+                transformer_dim=transformer_dim,
+                transformer_depth=transformer_depth,
+                transformer_heads=transformer_heads,
+                transformer_mlp_dim=transformer_mlp_dim,
+                dropout_rate=transformer_dropout,
+                num_qs=num_qs,
+            )
         critic_params = critic_def.init(critic_key, observations, actions)['params']
         critic = TrainState.create(
             apply_fn=critic_def.apply,
