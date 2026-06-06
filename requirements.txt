@@ -1,3 +1,4 @@
+numpy==2.1.3
 diffusers==0.33.1
 distrax==0.1.5
 dm-control==1.0.14
@@ -26,6 +27,7 @@ etils==1.12.2
 matplotlib==3.9.3
 wandb[media]==0.19.9
 opencv-python==4.11.0.86
+opencv-contrib-python==4.11.0.86
 robosuite==1.4.1
 gym-aloha==0.1.1
 bddl==3.5.0
