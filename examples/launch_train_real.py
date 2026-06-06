@@ -58,7 +58,7 @@ if __name__ == '__main__':
         softmax_temperature=-1,
         target_entropy=0.0,
         num_qs=2,
-        action_magnitude=2.5,
+        action_magnitude=2.0,
         num_cameras=3,
         )
 
