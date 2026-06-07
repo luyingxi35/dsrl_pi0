@@ -140,6 +140,7 @@ def run_rollout(
     successes: int,
     outputdir: Path,
     exec_config: ExecutionConfig | None = None,
+    diagnostic_logger=None,   # DiagnosticLogger | None; None = zero overhead
 ) -> RolloutResult:
     from tqdm import tqdm
 
@@ -203,7 +204,19 @@ def run_rollout(
             if decision is not None:
                 break
 
-            t_step_end = t_loop_start + (t + 1) * dt_step
+            t_step_end  = t_loop_start + (t + 1) * dt_step
+            _t_tick_start = time.time()   # wall-clock at tick start
+
+            # Per-tick diagnostic tracking (set to defaults; updated below)
+            _diag_infer_triggered = False
+            _diag_infer_recv      = False
+            _diag_n_returned      = 0
+            _diag_n_is_new        = 0
+            _diag_n_scheduled     = 0
+            _diag_all_stale       = False
+            _diag_arm_times       = None
+            _diag_arm_positions   = None
+            _diag_gripper_cmd     = None
 
             # ── 1. Observation ─────────────────────────────────────────────────
             # Pull the NUC's high-frequency state history before get_observation()
@@ -241,13 +254,17 @@ def run_rollout(
                     break
 
             if latest_result is not None:
+                _diag_infer_recv = True
                 new_actions, t_obs = latest_result
                 action_timestamps = t_obs + np.arange(len(new_actions)) * dt_step
                 curr_time = time.time()
                 is_new = action_timestamps > (curr_time + exec_config.action_exec_latency)
+                _diag_n_returned = len(new_actions)
+                _diag_n_is_new   = int(np.sum(is_new))
                 if np.any(is_new):
                     new_a = new_actions[is_new][: exec_config.execution_steps]
                     new_t = action_timestamps[is_new][: exec_config.execution_steps]
+                    _diag_n_scheduled = len(new_a)
 
                     # Arm: integrate joint_velocity → cumulative absolute joint angles.
                     # pi0 outputs normalized joint velocities in [-1, 1].
@@ -270,6 +287,8 @@ def run_rollout(
                     # Lists (not numpy) because msgpack serialises them natively.
                     arm_times = new_t - exec_config.robot_action_latency
                     env._robot.add_waypoints(arm_times.tolist(), arm_positions.tolist())
+                    _diag_arm_times     = arm_times
+                    _diag_arm_positions = arm_positions
 
                     # Gripper: keep in 10Hz discrete schedule
                     scheduled_gripper_actions = [
@@ -277,10 +296,12 @@ def run_rollout(
                         for ts, a in zip(new_t, new_a)
                     ]
                 else:
+                    _diag_all_stale = True
                     logging.warning("run_rollout: all actions stale at t=%d", t)
 
             # ── 3. Trigger inference (unconditional cadence, aligned with UMI) ──
             if t % exec_config.execution_steps == 0 and not inference_in_progress.is_set():
+                _diag_infer_triggered = True
                 inference_in_progress.set()
                 threading.Thread(
                     target=_run_inference,
@@ -299,6 +320,7 @@ def run_rollout(
                 _, gripper_to_exec = scheduled_gripper_actions.pop(0)
 
             if gripper_to_exec is not None:
+                _diag_gripper_cmd = gripper_to_exec
                 env._robot.update_gripper(gripper_to_exec, velocity=False, blocking=False)
 
             # ── 5. UI & bookkeeping ────────────────────────────────────────────
@@ -314,7 +336,31 @@ def run_rollout(
             if decision is not None:
                 break
 
-            # ── 6. Wait for tick deadline ──────────────────────────────────────
+            # ── 6. Diagnostic logging (no-op when logger is None) ──────────────
+            if diagnostic_logger is not None:
+                _sh_n    = len(state_history[0]) if state_history else 0
+                _sh_span = (float(state_history[0][-1]) - float(state_history[0][0])
+                            if _sh_n >= 2 else 0.0)
+                diagnostic_logger.record_tick(
+                    t_tick=_t_tick_start,
+                    t_step_end=t_step_end,
+                    t_obs=obs_timestamp,
+                    joint_pos_snapshot=curr_obs["joint_position"],
+                    joint_pos_interp=curr_obs["joint_position"],   # same; interp applied upstream
+                    state_history_n=_sh_n,
+                    state_history_span=_sh_span,
+                    infer_triggered=_diag_infer_triggered,
+                    infer_result_recv=_diag_infer_recv,
+                    n_returned=_diag_n_returned,
+                    n_is_new=_diag_n_is_new,
+                    n_scheduled=_diag_n_scheduled,
+                    all_stale=_diag_all_stale,
+                    arm_times_sent=_diag_arm_times,
+                    arm_positions_sent=_diag_arm_positions,
+                    gripper_cmd_sent=_diag_gripper_cmd,
+                )
+
+            # ── 7. Wait for tick deadline ──────────────────────────────────────
             sleep_s = t_step_end - time.time()
             if sleep_s > 0:
                 time.sleep(sleep_s)
@@ -386,6 +432,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--policy_host", default="127.0.0.1")
     parser.add_argument("--policy_port", default=8000, type=int)
     parser.add_argument("--outputdir", default=None)
+    parser.add_argument(
+        "--diagnostic_dir", default=None,
+        help="Directory to save per-episode diagnostic .npz files for visualize_rollout.py. "
+             "Disabled when not set. Adds ~1ms overhead per tick when enabled.",
+    )
     return parser
 
 
@@ -474,11 +525,26 @@ def run_evaluation(args: argparse.Namespace) -> None:
                 break
 
             reset_robot(env, reason=f"before episode {episode_id}")
+
+            # Construct a fresh diagnostic logger for this episode (None = disabled)
+            _diag_logger = None
+            if args.diagnostic_dir:
+                from examples.tests.diagnostic_logger import DiagnosticLogger
+                _diag_logger = DiagnosticLogger()
+
             result = run_rollout(
                 args, env, policy_service, robot_io, ui,
                 episode_id, completed, successes, outputdir,
                 exec_config=exec_config,
+                diagnostic_logger=_diag_logger,
             )
+
+            if _diag_logger is not None:
+                diag_path = Path(args.diagnostic_dir) / f"episode_{episode_id:03d}.npz"
+                _diag_logger.save(diag_path)
+                logging.info("Diagnostic data saved to %s  (%s)",
+                             diag_path, _diag_logger.summary())
+
             completed += 1
             successes += int(result.success)
 
