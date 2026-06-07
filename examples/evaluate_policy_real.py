@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Standalone real-world policy evaluation for DSRL pi0."""
 
+from __future__ import annotations
+
 import argparse
 import csv
 import dataclasses
@@ -15,6 +17,15 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from utils.real_robot_common import (
+    HumanEvalUI,
+    RolloutResult,
+    format_stats,
+    save_rollout_video,
+    reset_robot,
+    resolve_outputdir,
+)
 
 PI0_NOISE_HORIZON = 8
 VIDEO_FPS = 15
@@ -64,269 +75,6 @@ TRAIN_ARG_DEFAULTS = {
     "action_magnitude": 2.0,
     "num_cameras": 3,
 }
-
-
-@dataclasses.dataclass
-class RolloutResult:
-    episode_id: int
-    success: bool
-    failure_reason: str
-    env_steps: int
-    duration_s: float
-    video_path: str
-    timestamp: str
-
-
-class HumanEvalUI:
-    PREVIEW_SIZE = (360, 270)
-    BUTTON_FONT = ("Arial", 14, "bold")
-    BUTTON_WIDTH = 12
-
-    def __init__(self, total_episodes: int):
-        import tkinter as tk
-
-        self._tk = tk
-        self.root = tk.Tk()
-        self.root.title("Real Policy Evaluation")
-        self.root.geometry("820x610")
-        self.root.protocol("WM_DELETE_WINDOW", self.request_quit)
-
-        self.total_episodes = total_episodes
-        self.start_requested = False
-        self.quit_requested = False
-        self.running = False
-        self.decision: tuple[bool, str] | None = None
-        self.closed = False
-        self._preview_photos = {}
-
-        self.status_var = tk.StringVar(value="Waiting to start.")
-        self.stats_var = tk.StringVar(value="")
-
-        title = tk.Label(self.root, text="Real Policy Evaluation", font=("Arial", 16, "bold"))
-        title.pack(pady=(14, 4))
-
-        status = tk.Label(self.root, textvariable=self.status_var, font=("Arial", 11))
-        status.pack(pady=4)
-
-        stats = tk.Label(self.root, textvariable=self.stats_var, font=("Arial", 10))
-        stats.pack(pady=2)
-
-        preview_container = tk.Frame(self.root)
-        preview_container.pack(pady=(10, 8))
-        self.preview_labels = {}
-        for col, (name, title_text) in enumerate((("wrist", "Wrist"), ("exterior", "Exterior"))):
-            column_frame = tk.Frame(preview_container)
-            column_frame.grid(row=0, column=col, padx=8)
-            tk.Label(column_frame, text=title_text, font=("Arial", 10, "bold")).pack(pady=(0, 4))
-            preview_frame = tk.Frame(
-                column_frame,
-                width=self.PREVIEW_SIZE[0],
-                height=self.PREVIEW_SIZE[1],
-                bg="black",
-            )
-            preview_frame.pack()
-            preview_frame.pack_propagate(False)
-            preview_label = tk.Label(preview_frame, bg="black", bd=0)
-            preview_label.pack(expand=True)
-            self.preview_labels[name] = preview_label
-
-        button_frame = tk.Frame(self.root)
-        button_frame.pack(pady=14)
-
-        self.start_button = tk.Button(
-            button_frame,
-            text="Start next",
-            width=self.BUTTON_WIDTH,
-            font=self.BUTTON_FONT,
-            command=self.request_start,
-        )
-        self.start_button.grid(row=0, column=0, padx=6)
-
-        self.success_button = tk.Button(
-            button_frame,
-            text="Success",
-            width=self.BUTTON_WIDTH,
-            font=self.BUTTON_FONT,
-            command=self.mark_success,
-        )
-        self.success_button.grid(row=0, column=1, padx=6)
-
-        self.failure_button = tk.Button(
-            button_frame,
-            text="Failure",
-            width=self.BUTTON_WIDTH,
-            font=self.BUTTON_FONT,
-            command=self.mark_failure,
-        )
-        self.failure_button.grid(row=0, column=2, padx=6)
-
-        self.quit_button = tk.Button(
-            self.root,
-            text="Quit",
-            width=self.BUTTON_WIDTH,
-            font=self.BUTTON_FONT,
-            command=self.request_quit,
-        )
-        self.quit_button.pack(pady=(2, 10))
-
-        self.set_idle(episode_id=0, completed=0, successes=0)
-        self.update()
-
-    def request_start(self) -> None:
-        if not self.running:
-            self.start_requested = True
-
-    def request_quit(self) -> None:
-        self.quit_requested = True
-        if not self.closed:
-            self.status_var.set("Quit requested. Finishing current step...")
-
-    def mark_success(self) -> None:
-        if self.running and self.decision is None:
-            self.decision = (True, "")
-            self.status_var.set("Success marked. Stopping rollout...")
-            self._set_decision_buttons("disabled")
-
-    def mark_failure(self) -> None:
-        if self.running and self.decision is None:
-            self.decision = (False, "human_failure")
-            self.status_var.set("Failure marked. Stopping rollout...")
-            self._set_decision_buttons("disabled")
-
-    def set_idle(self, episode_id: int, completed: int, successes: int) -> None:
-        if self.closed:
-            return
-        self.running = False
-        self.start_requested = False
-        self.decision = None
-        self.status_var.set(f"Episode {episode_id + 1}/{self.total_episodes}: waiting for Start next.")
-        self.stats_var.set(_format_stats(completed, successes))
-        self.start_button.config(state="normal")
-        self._set_decision_buttons("disabled")
-
-    def set_running(self, episode_id: int, completed: int, successes: int) -> None:
-        if self.closed:
-            return
-        self.running = True
-        self.start_requested = False
-        self.decision = None
-        self.status_var.set(f"Episode {episode_id + 1}/{self.total_episodes}: running.")
-        self.stats_var.set(_format_stats(completed, successes))
-        self.start_button.config(state="disabled")
-        self._set_decision_buttons("normal")
-
-    def set_resetting(self, episode_id: int, completed: int, successes: int) -> None:
-        if self.closed:
-            return
-        self.running = False
-        self.status_var.set(f"Episode {episode_id + 1}/{self.total_episodes}: resetting robot.")
-        self.stats_var.set(_format_stats(completed, successes))
-        self.start_button.config(state="disabled")
-        self._set_decision_buttons("disabled")
-        self.update()
-
-    def wait_for_start(self, episode_id: int, completed: int, successes: int) -> bool:
-        self.set_idle(episode_id, completed, successes)
-        while not self.start_requested and not self.quit_requested:
-            self.update()
-            time.sleep(0.05)
-        return self.start_requested and not self.quit_requested
-
-    def poll(self) -> tuple[bool, str] | None:
-        self.update()
-        if self.quit_requested:
-            return False, "user_quit"
-        return self.decision
-
-    def update_step(self, episode_id: int, step: int, completed: int, successes: int) -> None:
-        if self.closed:
-            return
-        self.status_var.set(f"Episode {episode_id + 1}/{self.total_episodes}: running step {step}.")
-        self.stats_var.set(_format_stats(completed, successes))
-        self.update()
-
-    def update_camera_previews(self, wrist_image: Any | None = None, exterior_image: Any | None = None) -> None:
-        if self.closed:
-            return
-
-        try:
-            if wrist_image is not None:
-                self._set_preview_image("wrist", wrist_image)
-            if exterior_image is not None:
-                self._set_preview_image("exterior", exterior_image)
-            self.update()
-        except self._tk.TclError:
-            self.closed = True
-            self.quit_requested = True
-
-    def _set_preview_image(self, preview_name: str, image: Any) -> None:
-        import numpy as np
-        from PIL import Image, ImageTk
-
-        preview_label = self.preview_labels.get(preview_name)
-        if preview_label is None:
-            return
-
-        frame = np.asarray(image)
-        if frame.ndim == 2:
-            frame = np.repeat(frame[..., None], 3, axis=2)
-        if frame.ndim != 3:
-            return
-        if frame.shape[2] > 3:
-            frame = frame[..., :3]
-        if frame.shape[2] == 1:
-            frame = np.repeat(frame, 3, axis=2)
-        if frame.shape[2] != 3:
-            return
-
-        if frame.dtype != np.uint8:
-            frame = np.nan_to_num(frame)
-            if np.issubdtype(frame.dtype, np.floating) and frame.size and float(frame.max()) <= 1.0:
-                frame = frame * 255
-            frame = np.clip(frame, 0, 255).astype(np.uint8)
-
-        pil_image = Image.fromarray(np.ascontiguousarray(frame))
-        resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
-        pil_image.thumbnail(self.PREVIEW_SIZE, resampling)
-
-        canvas = Image.new("RGB", self.PREVIEW_SIZE, "black")
-        offset = (
-            (self.PREVIEW_SIZE[0] - pil_image.width) // 2,
-            (self.PREVIEW_SIZE[1] - pil_image.height) // 2,
-        )
-        canvas.paste(pil_image, offset)
-
-        photo = ImageTk.PhotoImage(canvas)
-        preview_label.config(image=photo)
-        self._preview_photos[preview_name] = photo
-
-    def update(self) -> None:
-        if self.closed:
-            return
-        try:
-            self.root.update()
-        except self._tk.TclError:
-            self.closed = True
-            self.quit_requested = True
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        try:
-            self.root.destroy()
-        except self._tk.TclError:
-            pass
-        self.closed = True
-
-    def _set_decision_buttons(self, state: str) -> None:
-        self.success_button.config(state=state)
-        self.failure_button.config(state=state)
-
-
-def _format_stats(completed: int, successes: int) -> str:
-    if completed == 0:
-        return "Completed: 0 | Success rate: n/a"
-    return f"Completed: {completed} | Successes: {successes} | Success rate: {successes / completed:.3f}"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -380,16 +128,6 @@ def make_variant(args: argparse.Namespace, attr_dict_cls: type[dict]) -> Any:
     return variant
 
 
-def resolve_outputdir(outputdir: str | None) -> Path:
-    if outputdir:
-        path = Path(outputdir)
-    else:
-        timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = Path("logs") / f"policy_eval_real_{timestamp}"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def create_agent(variant: Any):
     from examples.train_real import DummyEnv
     from jaxrl2.agents.pixel_sac.pixel_sac_learner import PixelSACLearner
@@ -405,10 +143,10 @@ def create_agent(variant: Any):
 
 
 def create_runtime(args: argparse.Namespace):
-    from examples.train_real import PolicyServerConfig
-    from examples.train_real import PolicyService
-    from examples.train_real import RobotIO
-    from examples.train_real import RobotRuntimeConfig
+    from utils.real_robot_common import PolicyServerConfig
+    from utils.real_robot_common import PolicyService
+    from utils.real_robot_common import RobotIO
+    from utils.real_robot_common import RobotRuntimeConfig
 
     policy_service = PolicyService(PolicyServerConfig(host=args.policy_host, port=args.policy_port))
     policy_service.preflight()
@@ -429,15 +167,6 @@ def create_runtime(args: argparse.Namespace):
     return policy_service, robot_io
 
 
-def reset_robot(env: Any, reason: str) -> None:
-    logging.info("Resetting DROID environment (%s)...", reason)
-    try:
-        env.reset()
-    except Exception:
-        logging.exception("Environment reset failed (%s).", reason)
-        raise
-
-
 def run_rollout(
     args: argparse.Namespace,
     variant: Any,
@@ -456,7 +185,7 @@ def run_rollout(
 
     from examples.train_utils_real import _extract_observation
     from examples.train_utils_real import build_rl_observation
-    from examples.train_utils_real import get_pi0_input
+    from examples.train_utils_real import get_pi0_input as _get_pi0_input_train
 
     runtime_config = robot_io.runtime_config
     step_time = 1 / runtime_config.control_frequency_hz
@@ -479,11 +208,11 @@ def run_rollout(
         curr_obs = _extract_observation(runtime_config, _env_obs)
         exterior_image_key = runtime_config.camera_to_use + "_image"
         ui.update_camera_previews(
-            wrist_image=curr_obs["wrist_image"],
-            exterior_image=curr_obs[exterior_image_key],
+            wrist=curr_obs["wrist_image"],
+            exterior=curr_obs[exterior_image_key],
         )
         image_list.append(_select_video_frame(curr_obs, runtime_config))
-        request_data = get_pi0_input(curr_obs, runtime_config, args.instruction)
+        request_data = _get_pi0_input_train(curr_obs, runtime_config, args.instruction)
 
         if t % args.query_freq == 0:
             obs_dict = build_rl_observation(variant, curr_obs, request_data, policy_service)
@@ -565,29 +294,6 @@ def _select_video_frame(obs: dict[str, Any], runtime_config: Any):
     return obs[exterior_image_key]
 
 
-def save_rollout_video(outputdir: Path, episode_id: int, image_list: list[Any]) -> str:
-    if not image_list:
-        return ""
-
-    import numpy as np
-    from moviepy.editor import ImageSequenceClip
-    from moviepy.video.io.ffmpeg_writer import ffmpeg_write_video
-
-    video_path = outputdir / f"eval_video_{episode_id}.mp4"
-    fps = float(VIDEO_FPS)
-    video = np.stack(image_list)
-    clip = ImageSequenceClip(list(video), fps=fps)
-    ffmpeg_write_video(
-        clip,
-        str(video_path),
-        fps,
-        codec="libx264",
-        audiofile=None,
-        logger=None,
-    )
-    return str(video_path)
-
-
 def append_result(csv_path: Path, args: argparse.Namespace, result: RolloutResult) -> None:
     row = {
         "episode_id": result.episode_id,
@@ -627,14 +333,18 @@ def run_evaluation(args: argparse.Namespace) -> None:
     from jaxrl2.utils.general_utils import AttrDict
 
     variant = make_variant(args, AttrDict)
-    outputdir = resolve_outputdir(args.outputdir)
+    outputdir = resolve_outputdir(args.outputdir, prefix="policy_eval_real")
     csv_path = outputdir / "eval_results.csv"
 
     logging.info("Writing evaluation outputs to %s", outputdir)
     agent = create_agent(variant)
     policy_service, robot_io = create_runtime(args)
     env = robot_io.env
-    ui = HumanEvalUI(args.eval_episodes)
+    ui = HumanEvalUI(
+        title="Real Policy Evaluation",
+        total_episodes=args.eval_episodes,
+        preview_names=(("wrist", "Wrist"), ("exterior", "Exterior")),
+    )
 
     completed = 0
     successes = 0
