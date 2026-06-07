@@ -37,8 +37,6 @@ from utils.real_robot_common import (
     append_result,
     format_stats,
 )
-from utils.robot_controller import HighFreqController
-
 DEFAULT_CONTROL_FREQUENCY = 10
 VIDEO_FPS = 15
 
@@ -135,18 +133,21 @@ def run_rollout(
     robot_config = robot_io.robot_config
     dt_step = 1.0 / robot_config.control_frequency_hz
 
-    # ── Warm up impedance controller ──────────────────────────────────────────
-    # Trigger DROID's impedance startup so Polymetis accepts continuous targets.
+    # ── Warm-up: trigger impedance controller on NUC ──────────────────────────
+    # update_joints(blocking=False) starts DROID's impedance controller via the
+    # NUC server's helper_non_blocking thread, which calls start_cartesian_impedance().
+    # The HighFreqController needs impedance active before sending targets.
     current_joints = np.array(env.get_observation()["robot_state"]["joint_positions"])
     env._robot.update_joints(current_joints, velocity=False, blocking=False)
-    time.sleep(0.1)  # allow impedance to activate
+    time.sleep(0.15)  # allow impedance to activate on NUC
 
-    # ── High-frequency arm controller (analogous to UMI's RTDE process) ───────
-    controller = HighFreqController(env._robot._robot, frequency=exec_config.controller_frequency)
-    controller.start()
+    # ── Start high-frequency controller ON THE NUC (zerorpc call) ─────────────
+    # HighFreqController runs on the NUC alongside Polymetis, not on GPU server.
+    # env._robot is ServerInterface → this call goes over zerorpc to NUC:4242.
+    env._robot.start_trajectory_controller(exec_config.controller_frequency)
 
     # ── Inference concurrency ──────────────────────────────────────────────────
-    # env.step() / env._robot calls use zerorpc/gevent → must stay on main thread.
+    # Gripper and obs calls use zerorpc/gevent → must stay on main thread.
     # policy_service.infer() uses openpi websocket (not gevent) → safe in thread.
     inference_queue: queue.Queue = queue.Queue()
     inference_in_progress = threading.Event()
@@ -206,10 +207,13 @@ def run_rollout(
                     new_a = new_actions[is_new][: exec_config.execution_steps]
                     new_t = action_timestamps[is_new][: exec_config.execution_steps]
 
-                    # Arm: pass to high-freq controller with latency compensation
+                    # Arm: send to NUC's HighFreqController via zerorpc.
+                    # Subtract robot_action_latency so the NUC's 200Hz loop starts
+                    # moving toward each waypoint early enough to arrive on time.
+                    # Lists are used (not numpy) because msgpack serialises them natively.
                     arm_times = new_t - exec_config.robot_action_latency
                     arm_positions = np.array([binarize_and_clip_action(a)[:-1] for a in new_a])
-                    controller.add_waypoints(arm_times, arm_positions)
+                    env._robot.add_waypoints(arm_times.tolist(), arm_positions.tolist())
 
                     # Gripper: keep in 10Hz discrete schedule
                     scheduled_gripper_actions = [
@@ -260,8 +264,7 @@ def run_rollout(
                 time.sleep(sleep_s)
 
     finally:
-        controller.stop()
-        controller.join(timeout=2.0)
+        env._robot.stop_trajectory_controller()   # stops HighFreqController on NUC
         inference_in_progress.wait(timeout=5.0)
 
     if decision is None:
