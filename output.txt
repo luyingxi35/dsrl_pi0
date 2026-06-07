@@ -1,27 +1,37 @@
-(dsrl_pi0) robot@robot:~/yingxi/dsrl_pi0$ python3 examples/evaluate_pi0_real.py --instruction "pick up the blue peg" --eval_episodes 15 --max_rollout_steps 400 --execution_steps 4 --control_frequency_hz 10 --controller_frequency 200 --use_wrist_camera 1 --use_exterior_camera 0 --policy_host 127.0.0.1 --policy_port 8000 --outputdir ./logs/pi0_eval_real
-INFO:root:ExecutionConfig: execution_steps=4 robot_action_latency=0.200s gripper_action_latency=0.200s action_exec_latency=0.010s controller_frequency=200Hz
-INFO:root:Waiting for server at ws://127.0.0.1:8000...
-INFO:root:OpenPI policy server metadata: {'action_horizon': 8, 'action_dim': 32}
-Opening Zed:  17396664
-Opening RealSense:  241122302552
-[2026-06-07 16:01:38 UTC][ZED][INFO] Logging level INFO
-[2026-06-07 16:01:39 UTC][ZED][INFO] [Init]  Camera successfully opened.
-[2026-06-07 16:01:39 UTC][ZED][INFO] [Init]  Camera FW version: 1523
-[2026-06-07 16:01:39 UTC][ZED][INFO] [Init]  Video mode: HD720@60
-[2026-06-07 16:01:39 UTC][ZED][INFO] [Init]  Serial Number: S/N 17396664
-[2026-06-07 16:01:39 UTC][ZED][INFO] [Init]  Depth mode selected: NEURAL. Ensure this mode matches your application's performance and accuracy requirements. See https://www.stereolabs.com/docs/depth-sensing/depth-modes for help.
-[2026-06-07 16:01:39 UTC][ZED][WARNING] [Init]  Self-calibration was skipped due to low texture or occlusion in the scene. Tracking accuracy may be affected.
-INFO:root:Writing pi0 evaluation outputs to logs/pi0_eval_real
-INFO:root:Resetting DROID environment (before episode 0)...
 Traceback (most recent call last):
-  File "/home/robot/yingxi/dsrl_pi0/examples/evaluate_pi0_real.py", line 424, in <module>
+  File "/home/robot/yingxi/dsrl_pi0/examples/evaluate_pi0_real.py", line 507, in <module>
     main()
-  File "/home/robot/yingxi/dsrl_pi0/examples/evaluate_pi0_real.py", line 420, in main
+  File "/home/robot/yingxi/dsrl_pi0/examples/evaluate_pi0_real.py", line 503, in main
     run_evaluation(args)
-  File "/home/robot/yingxi/dsrl_pi0/examples/evaluate_pi0_real.py", line 371, in run_evaluation
+  File "/home/robot/yingxi/dsrl_pi0/examples/evaluate_pi0_real.py", line 454, in run_evaluation
     result = run_rollout(
              ^^^^^^^^^^^^
-  File "/home/robot/yingxi/dsrl_pi0/examples/evaluate_pi0_real.py", line 145, in run_rollout
-    controller = HighFreqController(env._robot._robot, frequency=exec_config.controller_frequency)
-                                    ^^^^^^^^^^^^^^^^^
-AttributeError: 'ServerInterface' object has no attribute '_robot'
+  File "/home/robot/yingxi/dsrl_pi0/examples/evaluate_pi0_real.py", line 159, in run_rollout
+    env._robot.start_trajectory_controller(exec_config.controller_frequency)
+  File "/home/robot/yingxi/droid/droid/misc/server_interface.py", line 83, in start_trajectory_controller
+    self.server.start_trajectory_controller(float(frequency))
+  File "/home/robot/miniconda3/envs/dsrl_pi0/lib/python3.11/site-packages/zerorpc/core.py", line 278, in <lambda>
+    return lambda *args, **kargs: self(method, *args, **kargs)
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/robot/miniconda3/envs/dsrl_pi0/lib/python3.11/site-packages/zerorpc/core.py", line 270, in __call__
+    return self._process_response(request_event, bufchan, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/robot/miniconda3/envs/dsrl_pi0/lib/python3.11/site-packages/zerorpc/core.py", line 237, in _process_response
+    return pattern.process_answer(self._context, bufchan, request_event,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/robot/miniconda3/envs/dsrl_pi0/lib/python3.11/site-packages/zerorpc/patterns.py", line 45, in process_answer
+    raise exception
+zerorpc.exceptions.RemoteError: Traceback (most recent call last):
+  File "/home/robot/anaconda3/envs/polymetis-local/lib/python3.8/site-packages/zerorpc/core.py", line 153, in _async_task
+    functor.pattern.process_call(self._context, bufchan, event, functor)
+  File "/home/robot/anaconda3/envs/polymetis-local/lib/python3.8/site-packages/zerorpc/patterns.py", line 30, in process_call
+    result = functor(*req_event.args)
+  File "/home/robot/anaconda3/envs/polymetis-local/lib/python3.8/site-packages/zerorpc/decorators.py", line 44, in __call__
+    return self._functor(*args, **kargs)
+  File "/home/robot/yingxi/droid/droid/franka/robot.py", line 206, in start_trajectory_controller
+    from droid.franka.trajectory_controller import HighFreqController
+  File "/home/robot/yingxi/droid/droid/franka/trajectory_controller.py", line 53, in <module>
+    class HighFreqController(threading.Thread):
+  File "/home/robot/yingxi/droid/droid/franka/trajectory_controller.py", line 113, in HighFreqController
+    def get_state_history(self, n: int = 100) -> tuple[list, list, list]:
+TypeError: 'type' object is not subscriptable
