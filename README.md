@@ -149,10 +149,10 @@ cd ~/yingxi/dsrl_pi0
 conda activate dsrl_pi0
 
 python3 examples/evaluate_pi0_real.py \
---instruction "Insert the peg into the hole." \
+--instruction "pick up the blue peg" \
 --eval_episodes 15 \
 --max_rollout_steps 400 \
---execution_steps 6 \
+--execution_steps 4 \
 --control_frequency_hz 10 \
 --controller_frequency 200 \
 --use_wrist_camera 1 \
