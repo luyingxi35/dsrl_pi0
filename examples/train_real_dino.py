@@ -1,163 +1,44 @@
 #! /usr/bin/env python
-import dataclasses
 import logging
 import os
+import sys
 import tempfile
 from functools import partial
+from pathlib import Path
 
 import gymnasium as gym
 import jax
 import numpy as np
 import tensorflow as tf
-from droid.robot_env import RobotEnv
 from gym.spaces import Box, Dict
 from jax.experimental.compilation_cache import compilation_cache
 from jaxrl2.agents.state_sac.state_sac_learner import StateSACLearner
 from jaxrl2.data import ReplayBuffer
 from jaxrl2.utils.general_utils import add_batch_dim
 from jaxrl2.utils.wandb_logger import WandBLogger, create_exp_name
-from openpi_client import websocket_client_policy as _websocket_client_policy
 
 from examples.train_utils_real import trajwise_alternating_training_loop
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from utils.real_robot_common import (
+    PolicyServerConfig,
+    RobotRuntimeConfig,
+    PolicyService,
+    RobotIO,
+    _has_camera_image,
+)
 
 home_dir = os.environ['HOME']
 compilation_cache.initialize_cache(os.path.join(home_dir, 'jax_compilation_cache'))
 
-DEFAULT_DROID_CONTROL_FREQUENCY = 15
 PROPRIO_DIM = 8
 PI0_VLM_EMBED_DIM = 2048
 DINO_V2_SMALL_CLS_DIM = 384
 PI0_NOISE_DIM = 32
 STATE_DIM = PROPRIO_DIM + PI0_VLM_EMBED_DIM + DINO_V2_SMALL_CLS_DIM
-
-
-@dataclasses.dataclass(frozen=True)
-class PolicyServerConfig:
-    host: str
-    port: int
-
-
-@dataclasses.dataclass(frozen=True)
-class RobotRuntimeConfig:
-    external_camera: str
-    left_camera_id: str
-    right_camera_id: str
-    wrist_camera_id: str
-    max_timesteps: int
-    control_frequency_hz: int = DEFAULT_DROID_CONTROL_FREQUENCY
-    use_wrist_camera: bool = True
-    use_exterior_camera: bool = False
-    allow_missing_cameras: bool = True
-    require_wrist_camera: bool = True
-
-    @property
-    def camera_to_use(self) -> str:
-        return self.external_camera
-
-    @property
-    def selected_exterior_camera_id(self) -> str:
-        if self.external_camera == "left":
-            return self.left_camera_id
-        if self.external_camera == "right":
-            return self.right_camera_id
-        raise ValueError(f"Unsupported external_camera={self.external_camera!r}.")
-
-    def validate(self) -> None:
-        camera_ids = {
-            "left_camera_id": self.left_camera_id,
-            "right_camera_id": self.right_camera_id,
-            "wrist_camera_id": self.wrist_camera_id,
-        }
-        if not self.use_wrist_camera and not self.use_exterior_camera:
-            raise ValueError("At least one of --use_wrist_camera or --use_exterior_camera must be enabled.")
-        if not self.wrist_camera_id:
-            raise ValueError(
-                "DINO real training requires --wrist_camera_id because the RL state uses wrist DINO features."
-            )
-        if self.use_exterior_camera and not self.selected_exterior_camera_id:
-            raise ValueError(
-                f"--use_exterior_camera=1 requires --{self.external_camera}_camera_id to be set."
-            )
-        if self.use_exterior_camera and self.wrist_camera_id == self.selected_exterior_camera_id:
-            raise ValueError(f"The wrist camera must be different from the external camera IDs: {camera_ids}")
-
-
-class PolicyService:
-    def __init__(self, config: PolicyServerConfig):
-        self._config = config
-        self._client = _websocket_client_policy.WebsocketClientPolicy(
-            host=config.host,
-            port=config.port,
-        )
-
-    def preflight(self):
-        metadata = self._client.get_server_metadata()
-        logging.info("OpenPI policy server metadata: %s", metadata)
-        return metadata
-
-    def infer(self, obs, noise=None):
-        return self._client.infer(obs, noise=noise)
-
-    def get_prefix_rep(self, obs):
-        return self._client.get_prefix_rep(obs)
-
-
-class RobotIO:
-    def __init__(self, runtime_config: RobotRuntimeConfig):
-        self._runtime_config = runtime_config
-        self._env = RobotEnv(action_space="joint_velocity", gripper_action_space="position")
-
-    @property
-    def env(self):
-        return self._env
-
-    @property
-    def runtime_config(self):
-        return self._runtime_config
-
-    def preflight(self):
-        obs = self._env.get_observation()
-        image_observations = obs["image"]
-        required_cameras = [(self._runtime_config.wrist_camera_id, "wrist")]
-        if self._runtime_config.use_exterior_camera:
-            required_cameras.append(
-                (self._runtime_config.selected_exterior_camera_id, f"{self._runtime_config.external_camera} external")
-            )
-        missing = [
-            label
-            for cam_id, label in required_cameras
-            if cam_id and not _has_camera_image(image_observations, cam_id)
-        ]
-        if missing:
-            raise RuntimeError(
-                "DROID camera preflight failed. Missing image feeds for: "
-                + ", ".join(missing)
-            )
-        return obs
-
-
-def _has_camera_image(image_observations, camera_id: str) -> bool:
-    if not camera_id:
-        return False
-    candidates = _camera_id_candidates(camera_id)
-    return any(
-        key == candidate or key.startswith(f"{candidate}_")
-        for key in image_observations.keys()
-        for candidate in candidates
-    )
-
-
-def _camera_id_candidates(camera_id: str) -> set[str]:
-    camera_id = str(camera_id)
-    prefixes = ("realsense_", "zedmini_", "zed_mini_", "zed_")
-    serial = camera_id
-    for prefix in prefixes:
-        if serial.startswith(prefix):
-            serial = serial.removeprefix(prefix)
-            break
-    candidates = {camera_id, serial}
-    candidates.update(f"{prefix}{serial}" for prefix in prefixes)
-    return candidates
 
 
 def _validate_policy_metadata(metadata, expected_horizon: int, expected_action_dim: int) -> None:
@@ -326,8 +207,6 @@ def main(variant):
         wrist_camera_id=variant.wrist_camera_id,
         max_timesteps=variant.max_rollout_steps,
         control_frequency_hz=variant.control_frequency_hz,
-        use_wrist_camera=bool(variant.use_wrist_camera),
-        use_exterior_camera=bool(variant.use_exterior_camera),
         allow_missing_cameras=True,
     )
     runtime_config.validate()

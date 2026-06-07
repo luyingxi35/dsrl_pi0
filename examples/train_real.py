@@ -1,143 +1,38 @@
 #! /usr/bin/env python
-import dataclasses
 import logging
 import os
+import sys
 import tempfile
 from functools import partial
+from pathlib import Path
 
 import gymnasium as gym
 import jax
 import numpy as np
 import tensorflow as tf
-from droid.robot_env import RobotEnv
 from gym.spaces import Box, Dict
 from jax.experimental.compilation_cache import compilation_cache
 from jaxrl2.agents.pixel_sac.pixel_sac_learner import PixelSACLearner
 from jaxrl2.data import ReplayBuffer
 from jaxrl2.utils.general_utils import add_batch_dim
 from jaxrl2.utils.wandb_logger import WandBLogger, create_exp_name
-from openpi_client import websocket_client_policy as _websocket_client_policy
 
 from examples.train_utils_real import trajwise_alternating_training_loop
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from utils.real_robot_common import (
+    PolicyServerConfig,
+    RobotRuntimeConfig,
+    PolicyService,
+    RobotIO,
+    _has_camera_image,
+)
+
 home_dir = os.environ['HOME']
 compilation_cache.initialize_cache(os.path.join(home_dir, 'jax_compilation_cache'))
-
-DEFAULT_DROID_CONTROL_FREQUENCY = 15
-
-
-@dataclasses.dataclass(frozen=True)
-class PolicyServerConfig:
-    host: str
-    port: int
-
-
-@dataclasses.dataclass(frozen=True)
-class RobotRuntimeConfig:
-    external_camera: str
-    left_camera_id: str
-    right_camera_id: str
-    wrist_camera_id: str
-    max_timesteps: int
-    control_frequency_hz: int = DEFAULT_DROID_CONTROL_FREQUENCY
-    allow_missing_cameras: bool = False
-
-    @property
-    def camera_to_use(self) -> str:
-        return self.external_camera
-
-    def validate(self) -> None:
-        camera_ids = {
-            "left_camera_id": self.left_camera_id,
-            "right_camera_id": self.right_camera_id,
-            "wrist_camera_id": self.wrist_camera_id,
-        }
-        missing = [name for name, value in camera_ids.items() if not value]
-        if missing and not (self.allow_missing_cameras and any(camera_ids.values())):
-            raise ValueError(
-                "DROID camera IDs must be set before running real rollouts. "
-                f"Missing: {', '.join(missing)}. Fill these in examples/scripts/run_real.sh."
-            )
-        if self.wrist_camera_id and self.wrist_camera_id in {self.left_camera_id, self.right_camera_id}:
-            raise ValueError(f"The wrist camera must be different from the external camera IDs: {camera_ids}")
-
-
-class PolicyService:
-    def __init__(self, config: PolicyServerConfig):
-        self._config = config
-        self._client = _websocket_client_policy.WebsocketClientPolicy(
-            host=config.host,
-            port=config.port,
-        )
-
-    def preflight(self):
-        metadata = self._client.get_server_metadata()
-        logging.info("OpenPI policy server metadata: %s", metadata)
-        return metadata
-
-    def infer(self, obs, noise=None):
-        return self._client.infer(obs, noise=noise)
-
-    def get_prefix_rep(self, obs):
-        return self._client.get_prefix_rep(obs)
-
-
-class RobotIO:
-    def __init__(self, runtime_config: RobotRuntimeConfig):
-        self._runtime_config = runtime_config
-        self._env = RobotEnv(action_space="joint_velocity", gripper_action_space="position")
-
-    @property
-    def env(self):
-        return self._env
-
-    @property
-    def runtime_config(self):
-        return self._runtime_config
-
-    def preflight(self):
-        obs = self._env.get_observation()
-        image_observations = obs["image"]
-        required_cameras = [
-            (self._runtime_config.left_camera_id, "left external"),
-            (self._runtime_config.right_camera_id, "right external"),
-            (self._runtime_config.wrist_camera_id, "wrist"),
-        ]
-        missing = [
-            label
-            for cam_id, label in required_cameras
-            if cam_id and not _has_camera_image(image_observations, cam_id)
-        ]
-        if missing:
-            raise RuntimeError(
-                "DROID camera preflight failed. Missing image feeds for: "
-                + ", ".join(missing)
-            )
-        return obs
-
-
-def _has_camera_image(image_observations, camera_id: str) -> bool:
-    if not camera_id:
-        return False
-    candidates = _camera_id_candidates(camera_id)
-    return any(
-        key == candidate or key.startswith(f"{candidate}_")
-        for key in image_observations.keys()
-        for candidate in candidates
-    )
-
-
-def _camera_id_candidates(camera_id: str) -> set[str]:
-    camera_id = str(camera_id)
-    prefixes = ("realsense_", "zedmini_", "zed_mini_", "zed_")
-    serial = camera_id
-    for prefix in prefixes:
-        if serial.startswith(prefix):
-            serial = serial.removeprefix(prefix)
-            break
-    candidates = {camera_id, serial}
-    candidates.update(f"{prefix}{serial}" for prefix in prefixes)
-    return candidates
 
 
 def shard_batch(batch, sharding):
