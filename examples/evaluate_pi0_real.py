@@ -72,7 +72,7 @@ class ExecutionConfig:
     # Time (s) from env.step() call to robot physically responding.
     # The scheduler advances each action's call time by this amount so the
     # robot reaches the target pose at the intended moment.
-    robot_action_latency: float = 0.1
+    robot_action_latency: float = 0.20
     # Minimum lead time (s) required to schedule an action.
     # Actions whose target_time <= curr_time + action_exec_latency are
     # considered stale and skipped (or handled via fallback).
