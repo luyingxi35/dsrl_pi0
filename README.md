@@ -153,8 +153,6 @@ python3 examples/evaluate_pi0_real.py \
 --eval_episodes 15 \
 --max_rollout_steps 400 \
 --execution_steps 6 \
---robot_action_latency 0.1 \
---action_exec_latency 0.01 \
 --control_frequency_hz 10 \
 --use_wrist_camera 1 \
 --use_exterior_camera 0 \
