@@ -86,8 +86,9 @@ class RobotIO:
     def __init__(self, robot_config: EvalRobotConfig) -> None:
         from droid.robot_env import RobotEnv
         self._robot_config = robot_config
-        # Use joint_position so pi0's absolute joint angle output is sent directly
-        self._env = RobotEnv(action_space="joint_position", gripper_action_space="position")
+        # pi0 outputs joint_velocity (normalized [-1,1]); client integrates to
+        # absolute positions before sending to the NUC HighFreqController.
+        self._env = RobotEnv(action_space="joint_velocity", gripper_action_space="position")
 
     @property
     def env(self):
@@ -207,12 +208,25 @@ def run_rollout(
                     new_a = new_actions[is_new][: exec_config.execution_steps]
                     new_t = action_timestamps[is_new][: exec_config.execution_steps]
 
-                    # Arm: send to NUC's HighFreqController via zerorpc.
-                    # Subtract robot_action_latency so the NUC's 200Hz loop starts
-                    # moving toward each waypoint early enough to arrive on time.
-                    # Lists are used (not numpy) because msgpack serialises them natively.
+                    # Arm: integrate joint_velocity → cumulative absolute joint angles.
+                    # pi0 outputs normalized joint velocities in [-1, 1].
+                    # delta_k = clip(v_k, -1, 1) * MAX_JOINT_DELTA  (0.2 rad, per joint)
+                    # pos_k   = current_joints + sum(delta_0 .. delta_k)
+                    # Source: droid/robot_ik/robot_ik_solver.py, relative_max_joint_delta
+                    _MAX_JOINT_DELTA = 0.2  # rad per step (from DROID IK solver)
+                    _running_joints = curr_obs["joint_position"].copy()
+                    _arm_abs: list[np.ndarray] = []
+                    for _a in new_a:
+                        _vel = np.clip(_a[:-1], -1.0, 1.0)
+                        _running_joints = _running_joints + _vel * _MAX_JOINT_DELTA
+                        _arm_abs.append(_running_joints.copy())
+                    arm_positions = np.array(_arm_abs)  # (N, 7) radians
+
+                    # Send to NUC's HighFreqController via zerorpc.
+                    # Subtract robot_action_latency so the 200Hz loop calls
+                    # update_desired_joint_positions early enough to arrive on time.
+                    # Lists (not numpy) because msgpack serialises them natively.
                     arm_times = new_t - exec_config.robot_action_latency
-                    arm_positions = np.array([binarize_and_clip_action(a)[:-1] for a in new_a])
                     env._robot.add_waypoints(arm_times.tolist(), arm_positions.tolist())
 
                     # Gripper: keep in 10Hz discrete schedule
