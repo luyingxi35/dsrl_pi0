@@ -151,8 +151,9 @@ conda activate dsrl_pi0
 python3 examples/evaluate_pi0_real.py \
 --instruction "pick up the blue peg" \
 --eval_episodes 15 \
---max_rollout_steps 400 \
+--max_duration_s 60 \
 --execution_steps 4 \
+--action_scale 0.5 \
 --control_frequency_hz 10 \
 --controller_frequency 200 \
 --use_wrist_camera 1 \
