@@ -1,0 +1,27 @@
+(dsrl_pi0) robot@robot:~/yingxi/dsrl_pi0$ python3 examples/evaluate_pi0_real.py --instruction "pick up the blue peg" --eval_episodes 15 --max_rollout_steps 400 --execution_steps 4 --control_frequency_hz 10 --controller_frequency 200 --use_wrist_camera 1 --use_exterior_camera 0 --policy_host 127.0.0.1 --policy_port 8000 --outputdir ./logs/pi0_eval_real
+INFO:root:ExecutionConfig: execution_steps=4 robot_action_latency=0.200s gripper_action_latency=0.200s action_exec_latency=0.010s controller_frequency=200Hz
+INFO:root:Waiting for server at ws://127.0.0.1:8000...
+INFO:root:OpenPI policy server metadata: {'action_horizon': 8, 'action_dim': 32}
+Opening Zed:  17396664
+Opening RealSense:  241122302552
+[2026-06-07 16:01:38 UTC][ZED][INFO] Logging level INFO
+[2026-06-07 16:01:39 UTC][ZED][INFO] [Init]  Camera successfully opened.
+[2026-06-07 16:01:39 UTC][ZED][INFO] [Init]  Camera FW version: 1523
+[2026-06-07 16:01:39 UTC][ZED][INFO] [Init]  Video mode: HD720@60
+[2026-06-07 16:01:39 UTC][ZED][INFO] [Init]  Serial Number: S/N 17396664
+[2026-06-07 16:01:39 UTC][ZED][INFO] [Init]  Depth mode selected: NEURAL. Ensure this mode matches your application's performance and accuracy requirements. See https://www.stereolabs.com/docs/depth-sensing/depth-modes for help.
+[2026-06-07 16:01:39 UTC][ZED][WARNING] [Init]  Self-calibration was skipped due to low texture or occlusion in the scene. Tracking accuracy may be affected.
+INFO:root:Writing pi0 evaluation outputs to logs/pi0_eval_real
+INFO:root:Resetting DROID environment (before episode 0)...
+Traceback (most recent call last):
+  File "/home/robot/yingxi/dsrl_pi0/examples/evaluate_pi0_real.py", line 424, in <module>
+    main()
+  File "/home/robot/yingxi/dsrl_pi0/examples/evaluate_pi0_real.py", line 420, in main
+    run_evaluation(args)
+  File "/home/robot/yingxi/dsrl_pi0/examples/evaluate_pi0_real.py", line 371, in run_evaluation
+    result = run_rollout(
+             ^^^^^^^^^^^^
+  File "/home/robot/yingxi/dsrl_pi0/examples/evaluate_pi0_real.py", line 145, in run_rollout
+    controller = HighFreqController(env._robot._robot, frequency=exec_config.controller_frequency)
+                                    ^^^^^^^^^^^^^^^^^
+AttributeError: 'ServerInterface' object has no attribute '_robot'
