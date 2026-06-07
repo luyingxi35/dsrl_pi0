@@ -5,9 +5,11 @@ import argparse
 import csv
 import dataclasses
 import datetime as dt
+import heapq
 import logging
 from pathlib import Path
 import sys
+import threading
 import time
 from typing import Any
 
@@ -61,6 +63,22 @@ class RobotRuntimeConfig:
             raise ValueError("Hardcoded wrist and exterior camera IDs must be different.")
 
 
+@dataclasses.dataclass(frozen=True)
+class ExecutionConfig:
+    """Timing configuration for non-blocking timestamped action scheduling."""
+
+    # Number of actions to execute before re-inferring (replaces query_freq).
+    execution_steps: int = 6
+    # Time (s) from env.step() call to robot physically responding.
+    # The scheduler advances each action's call time by this amount so the
+    # robot reaches the target pose at the intended moment.
+    robot_action_latency: float = 0.1
+    # Minimum lead time (s) required to schedule an action.
+    # Actions whose target_time <= curr_time + action_exec_latency are
+    # considered stale and skipped (or handled via fallback).
+    action_exec_latency: float = 0.01
+
+
 @dataclasses.dataclass
 class RolloutResult:
     episode_id: int
@@ -88,6 +106,80 @@ class PolicyService:
 
     def infer(self, obs):
         return self._client.infer(obs)
+
+
+class ActionScheduler(threading.Thread):
+    """Background thread that executes timestamped actions at their scheduled wall-clock times.
+
+    Decouples policy inference from robot execution so the robot keeps moving
+    while the main thread is blocked on policy_service.infer().
+
+    Usage::
+
+        scheduler = ActionScheduler(env, frequency=15, exec_config=cfg, env_lock=lock)
+        scheduler.start()
+        scheduler.schedule_waypoint(action, target_time=t)   # non-blocking
+        ...
+        scheduler.stop()
+        scheduler.join()
+    """
+
+    def __init__(
+        self,
+        env: Any,
+        frequency: float,
+        exec_config: ExecutionConfig,
+        env_lock: threading.Lock,
+    ) -> None:
+        super().__init__(daemon=True, name="ActionScheduler")
+        self._env = env
+        self._dt = 1.0 / frequency
+        self._exec_config = exec_config
+        self._env_lock = env_lock
+        # min-heap entries: (adjusted_target_time, monotonic_seq, action)
+        self._heap: list[tuple[float, int, np.ndarray]] = []
+        self._heap_lock = threading.Lock()
+        self._seq = 0  # monotonic counter to break ties in the heap
+        self._stop_event = threading.Event()
+
+    def schedule_waypoint(self, action: np.ndarray, target_time: float) -> None:
+        """Enqueue *action* to be executed at (target_time - robot_action_latency).
+
+        Non-blocking: returns immediately after inserting into the internal heap.
+        """
+        adjusted = target_time - self._exec_config.robot_action_latency
+        with self._heap_lock:
+            heapq.heappush(self._heap, (adjusted, self._seq, action.copy()))
+            self._seq += 1
+
+    def stop(self) -> None:
+        """Signal the scheduler loop to exit."""
+        self._stop_event.set()
+
+    def run(self) -> None:
+        t_start = time.time()
+        iter_idx = 0
+        while not self._stop_event.is_set():
+            t_now = time.time()
+            action_to_exec = None
+
+            with self._heap_lock:
+                # Drain all due entries (adjusted_time <= now).
+                # If multiple actions are due, keep only the latest-scheduled one
+                # (highest seq); earlier ones are stale.
+                while self._heap and self._heap[0][0] <= t_now:
+                    _, _, action_to_exec = heapq.heappop(self._heap)
+
+            if action_to_exec is not None:
+                with self._env_lock:
+                    self._env.step(action_to_exec)
+
+            # Regulate at control frequency.
+            iter_idx += 1
+            t_next = t_start + iter_idx * self._dt
+            sleep_s = t_next - time.time()
+            if sleep_s > 0:
+                time.sleep(sleep_s)
 
 
 class RobotIO:
@@ -384,7 +476,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--instruction", default="put the spoon on the plate", help="Language instruction for pi0.")
     parser.add_argument("--eval_episodes", default=10, type=int, help="Number of real-world episodes to evaluate.")
     parser.add_argument("--max_rollout_steps", default=200, type=int, help="Max robot-control steps per episode.")
-    parser.add_argument("--query_freq", default=10, type=int, help="Control steps to execute before querying again.")
+    parser.add_argument(
+        "--execution_steps",
+        default=6,
+        type=int,
+        help=(
+            "Number of (non-stale) actions from each inference chunk to schedule "
+            "before re-inferring. Replaces --query_freq. Default: 6."
+        ),
+    )
+    parser.add_argument(
+        "--robot_action_latency",
+        default=0.1,
+        type=float,
+        help=(
+            "Seconds between env.step() call and the robot physically responding. "
+            "Each action's scheduled call time is advanced by this amount so the "
+            "robot reaches the target state at the intended moment. Default: 0.1."
+        ),
+    )
+    parser.add_argument(
+        "--action_exec_latency",
+        default=0.01,
+        type=float,
+        help=(
+            "Minimum lead time (s) required to schedule an action. "
+            "Actions whose target_time <= curr_time + action_exec_latency are "
+            "considered stale and skipped. Default: 0.01."
+        ),
+    )
     parser.add_argument("--control_frequency_hz", default=15, type=int, help="Target DROID control frequency.")
     parser.add_argument(
         "--use_wrist_camera",
@@ -452,57 +572,98 @@ def run_rollout(
     completed: int,
     successes: int,
     outputdir: Path,
+    exec_config: ExecutionConfig | None = None,
 ) -> RolloutResult:
     from tqdm import tqdm
 
+    if exec_config is None:
+        exec_config = ExecutionConfig()
+
     runtime_config = robot_io.runtime_config
-    step_time = 1 / runtime_config.control_frequency_hz
+    dt_step = 1.0 / runtime_config.control_frequency_hz
+
+    # env_lock guards concurrent access to env between the main thread
+    # (get_observation) and the ActionScheduler thread (step).
+    env_lock = threading.Lock()
+    scheduler = ActionScheduler(env, runtime_config.control_frequency_hz, exec_config, env_lock)
+    scheduler.start()
 
     ui.set_running(episode_id, completed, successes)
     start_time = time.time()
+    t_loop_start = start_time  # wall-clock anchor for absolute step deadlines
     timestamp = dt.datetime.now().isoformat(timespec="seconds")
     image_list = []
-    actions = None
     decision: tuple[bool, str] | None = None
     env_steps = 0
 
-    for t in tqdm(range(runtime_config.max_timesteps), desc=f"pi0 eval episode {episode_id}"):
-        decision = ui.poll()
-        if decision is not None:
-            break
+    try:
+        for t in tqdm(range(runtime_config.max_timesteps), desc=f"pi0 eval episode {episode_id}"):
+            decision = ui.poll()
+            if decision is not None:
+                break
 
-        step_started = time.time()
-        curr_obs = extract_camera_observation(runtime_config, env.get_observation())
-        ui.update_camera_previews(
-            wrist_image=curr_obs.get("wrist_image"),
-            exterior_image=curr_obs.get("exterior_image"),
-        )
-        image_list.append(_select_video_frame(curr_obs))
+            # ── Observation (guarded so it doesn't race with scheduler's env.step) ──
+            with env_lock:
+                curr_obs = extract_camera_observation(runtime_config, env.get_observation())
+            obs_timestamp = time.time()  # proxy for when the obs was captured
 
-        if t % args.query_freq == 0:
-            request_data = get_pi0_input(curr_obs, args.instruction)
-            response = policy_service.infer(request_data)
-            actions = np.asarray(response["actions"])
-            if actions.shape[0] < args.query_freq:
-                raise RuntimeError(
-                    f"Policy server returned {actions.shape[0]} actions, but query_freq={args.query_freq}."
-                )
+            ui.update_camera_previews(
+                wrist_image=curr_obs.get("wrist_image"),
+                exterior_image=curr_obs.get("exterior_image"),
+            )
+            image_list.append(_select_video_frame(curr_obs))
 
-        if actions is None:
-            raise RuntimeError("No action chunk available. This should be impossible at t=0.")
+            # ── Inference: once every execution_steps control steps ──
+            if t % exec_config.execution_steps == 0:
+                request_data = get_pi0_input(curr_obs, args.instruction)
+                response = policy_service.infer(request_data)
+                actions = np.asarray(response["actions"])
 
-        action_t = binarize_and_clip_action(actions[t % args.query_freq])
-        env.step(action_t)
-        env_steps = t + 1
+                # Assign an absolute target execution time to each action,
+                # anchored at the moment the observation was captured.
+                action_timestamps = obs_timestamp + np.arange(len(actions)) * dt_step
 
-        ui.update_step(episode_id, env_steps, completed, successes)
-        decision = ui.poll()
-        if decision is not None:
-            break
+                # Discard actions that are already too close to execute in time.
+                curr_time = time.time()
+                is_new = action_timestamps > (curr_time + exec_config.action_exec_latency)
 
-        elapsed = time.time() - step_started
-        if elapsed < step_time:
-            time.sleep(step_time - elapsed)
+                if not np.any(is_new):
+                    # Inference took so long that all actions are stale.
+                    # Fall back: schedule the last action at the next clean step slot.
+                    next_slot = int(np.ceil((curr_time - t_loop_start) / dt_step))
+                    fallback_time = t_loop_start + next_slot * dt_step
+                    logging.warning(
+                        "run_rollout: all actions stale at t=%d; "
+                        "scheduling fallback at t_loop+%.3fs",
+                        t,
+                        fallback_time - t_loop_start,
+                    )
+                    scheduler.schedule_waypoint(
+                        binarize_and_clip_action(actions[-1]), fallback_time
+                    )
+                else:
+                    # Take at most execution_steps actions from the non-stale set.
+                    new_actions = actions[is_new][: exec_config.execution_steps]
+                    new_timestamps = action_timestamps[is_new][: exec_config.execution_steps]
+                    for action, ts in zip(new_actions, new_timestamps):
+                        scheduler.schedule_waypoint(binarize_and_clip_action(action), ts)
+
+            env_steps = t + 1
+            ui.update_step(episode_id, env_steps, completed, successes)
+
+            decision = ui.poll()
+            if decision is not None:
+                break
+
+            # ── Wait until this step's absolute deadline ──
+            t_step_end = t_loop_start + (t + 1) * dt_step
+            sleep_s = t_step_end - time.time()
+            if sleep_s > 0:
+                time.sleep(sleep_s)
+
+    finally:
+        scheduler.stop()
+        scheduler.join(timeout=2.0)
 
     if decision is None:
         decision = (False, "timeout")
@@ -682,10 +843,22 @@ def append_result(csv_path: Path, args: argparse.Namespace, result: RolloutResul
 def run_evaluation(args: argparse.Namespace) -> None:
     if args.eval_episodes <= 0:
         raise ValueError("--eval_episodes must be positive.")
-    if args.query_freq <= 0:
-        raise ValueError("--query_freq must be positive.")
+    if args.execution_steps <= 0:
+        raise ValueError("--execution_steps must be positive.")
     if not args.use_wrist_camera and not args.use_exterior_camera:
         raise ValueError("At least one of --use_wrist_camera or --use_exterior_camera must be enabled.")
+
+    exec_config = ExecutionConfig(
+        execution_steps=args.execution_steps,
+        robot_action_latency=args.robot_action_latency,
+        action_exec_latency=args.action_exec_latency,
+    )
+    logging.info(
+        "ExecutionConfig: execution_steps=%d robot_action_latency=%.3fs action_exec_latency=%.3fs",
+        exec_config.execution_steps,
+        exec_config.robot_action_latency,
+        exec_config.action_exec_latency,
+    )
 
     outputdir = resolve_outputdir(args.outputdir)
     csv_path = outputdir / "eval_results.csv"
@@ -713,6 +886,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
                 completed,
                 successes,
                 outputdir,
+                exec_config=exec_config,
             )
             completed += 1
             successes += int(result.success)
