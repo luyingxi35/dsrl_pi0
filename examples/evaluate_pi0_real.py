@@ -56,6 +56,17 @@ class EvalRobotConfig:
     wrist_camera_id: str | None = None
     exterior_camera_id: str | None = None
     control_frequency_hz: int = DEFAULT_CONTROL_FREQUENCY
+    # ── Camera observation latencies (seconds) — calibrate empirically ─────────
+    # Each value = time from actual frame capture to when read_end is recorded.
+    # Used to anchor t_obs to the true camera capture moment (UMI-style).
+    # t_obs = camera_read_end_ms / 1000 - obs_latency
+    wrist_camera_obs_latency: float = 0.125     # ZedMini 60 fps — placeholder
+    exterior_camera_obs_latency: float = 0.175  # RealSense      — placeholder
+    # ── Proprioception latencies (seconds) — calibrate empirically ─────────────
+    # Time from physical robot state to when the NUC's gRPC read completes.
+    # Used to interpolate the 200 Hz state buffer to the camera obs timestamp.
+    proprioceptive_latency: float = 0.001  # joint positions read delay — placeholder
+    gripper_obs_latency: float = 0.020     # gripper state read delay   — placeholder
 
     def validate(self) -> None:
         if not self.wrist_camera_id and not self.exterior_camera_id:
@@ -184,12 +195,31 @@ def run_rollout(
             t_step_end = t_loop_start + (t + 1) * dt_step
 
             # ── 1. Observation ─────────────────────────────────────────────────
-            curr_obs = extract_observation_eval(
+            # Pull the NUC's high-frequency state history before get_observation()
+            # so the ring buffer already contains data up to this moment.
+            # get_state_history() is a single zerorpc call (~1–2 ms).
+            state_history = env._robot.get_state_history(n=100)   # last 0.5 s @ 200 Hz
+
+            curr_obs, obs_timestamp = extract_observation_eval(
                 robot_config.wrist_camera_id,
                 robot_config.exterior_camera_id,
                 env.get_observation(),
+                wrist_obs_latency=robot_config.wrist_camera_obs_latency,
+                exterior_obs_latency=robot_config.exterior_camera_obs_latency,
+                proprioceptive_latency=robot_config.proprioceptive_latency,
+                gripper_latency=robot_config.gripper_obs_latency,
+                state_history=state_history,
             )
-            obs_timestamp = time.time()
+            # obs_timestamp is now anchored to the camera capture time (past),
+            # mirroring UMI's hardware-timestamp-based t_obs.
+            # action_timestamps = obs_timestamp + k*dt will correctly place
+            # early actions in the past so is_new filters them out.
+            if t == 0:
+                logging.info(
+                    "t_obs drift: %.1f ms (camera frame age = obs_latency + any extra delay; "
+                    "tune *_camera_obs_latency if this deviates from expected latency)",
+                    (time.time() - obs_timestamp) * 1000,
+                )
 
             # ── 2. Drain inference queue (keep most recent) ────────────────────
             latest_result = None
@@ -318,6 +348,19 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Target DROID control frequency in Hz. Default: {DEFAULT_CONTROL_FREQUENCY}.")
     parser.add_argument("--controller_frequency", default=200.0, type=float,
         help="High-frequency joint controller loop rate in Hz. Default: 200.")
+    # ── Camera / proprioception observation latencies ──────────────────────────
+    parser.add_argument("--wrist_camera_obs_latency", default=None, type=float,
+        help="ZedMini wrist camera obs latency (s). "
+             "Default: EvalRobotConfig default (0.125 s). Calibrate empirically.")
+    parser.add_argument("--exterior_camera_obs_latency", default=None, type=float,
+        help="RealSense exterior camera obs latency (s). "
+             "Default: EvalRobotConfig default (0.175 s). Calibrate empirically.")
+    parser.add_argument("--proprioceptive_latency", default=None, type=float,
+        help="Joint position read latency (s). "
+             "Default: EvalRobotConfig default (0.001 s). Calibrate empirically.")
+    parser.add_argument("--gripper_obs_latency", default=None, type=float,
+        help="Gripper state read latency (s). "
+             "Default: EvalRobotConfig default (0.020 s). Calibrate empirically.")
     parser.add_argument("--use_wrist_camera", default=1, type=int, choices=(0, 1))
     parser.add_argument("--use_exterior_camera", default=0, type=int, choices=(0, 1))
     parser.add_argument("--policy_host", default="127.0.0.1")
@@ -352,11 +395,34 @@ def run_evaluation(args: argparse.Namespace) -> None:
         exec_config.controller_frequency,
     )
 
+    _cfg_defaults = EvalRobotConfig.__dataclass_fields__
     robot_config = EvalRobotConfig(
         max_timesteps=args.max_rollout_steps,
         wrist_camera_id=DEFAULT_WRIST_CAMERA_ID if args.use_wrist_camera else None,
         exterior_camera_id=DEFAULT_EXTERIOR_CAMERA_ID if args.use_exterior_camera else None,
         control_frequency_hz=args.control_frequency_hz,
+        wrist_camera_obs_latency=(
+            _cfg_defaults["wrist_camera_obs_latency"].default
+            if args.wrist_camera_obs_latency is None else args.wrist_camera_obs_latency
+        ),
+        exterior_camera_obs_latency=(
+            _cfg_defaults["exterior_camera_obs_latency"].default
+            if args.exterior_camera_obs_latency is None else args.exterior_camera_obs_latency
+        ),
+        proprioceptive_latency=(
+            _cfg_defaults["proprioceptive_latency"].default
+            if args.proprioceptive_latency is None else args.proprioceptive_latency
+        ),
+        gripper_obs_latency=(
+            _cfg_defaults["gripper_obs_latency"].default
+            if args.gripper_obs_latency is None else args.gripper_obs_latency
+        ),
+    )
+    logging.info(
+        "Camera obs latencies: wrist=%.3fs exterior=%.3fs | "
+        "State latencies: proprioceptive=%.3fs gripper=%.3fs",
+        robot_config.wrist_camera_obs_latency, robot_config.exterior_camera_obs_latency,
+        robot_config.proprioceptive_latency, robot_config.gripper_obs_latency,
     )
     robot_config.validate()
 

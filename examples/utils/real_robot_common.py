@@ -192,6 +192,100 @@ def _empty_rgb_image_like(*images) -> np.ndarray:
     return np.zeros((224, 224, 3), dtype=np.uint8)
 
 
+# ── Camera timestamp utilities ────────────────────────────────────────────────
+
+def _find_camera_ts_ms(
+    camera_timestamps: dict[str, Any],
+    camera_id: str,
+    suffix: str = "_read_end",
+) -> float | None:
+    """Return the wall-clock grab-end timestamp (milliseconds) for a camera.
+
+    DROID's ZED camera reader stores per-camera timestamps in
+    ``obs["timestamp"]["cameras"]`` with keys like ``"<serial>_read_end"``.
+    The value is in milliseconds from ``time_ms()`` (wall-clock).
+
+    Tries all prefixed variants of *camera_id* via ``_camera_id_candidates``
+    (e.g. ``"17396664"``, ``"zedmini_17396664"`` …).  Returns ``None`` if no
+    matching key exists (e.g. RealSense captured outside DROID's camera_readers).
+
+    Args:
+        suffix: timestamp field to use.  ``"_read_end"`` is when the frame
+                grab completed; ``"_read_start"`` is when it began.
+    """
+    for candidate in _camera_id_candidates(camera_id):
+        key = candidate + suffix
+        if key in camera_timestamps:
+            return float(camera_timestamps[key])
+    return None
+
+
+# ── High-frequency state interpolator ────────────────────────────────────────
+
+class StateInterpolator:
+    """Linear interpolator over a (timestamp, joint_positions_7d, gripper_norm)
+    history buffer collected at high frequency on the NUC.
+
+    Mirrors UMI's ``PoseInterpolator`` / ``get_interp1d`` pattern but for
+    DROID joint space.
+
+    Proprioception read latency correction
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    A state entry recorded at wall-clock time *t_read* reflects the robot's
+    physical configuration at *t_read − proprioceptive_latency* (the gRPC
+    round-trip + Polymetis sampling delay).  To recover the physical state at
+    camera observation time *t_obs*, query at::
+
+        t_query = t_obs + proprioceptive_latency
+
+    The same logic applies to gripper state with its own latency value.
+    """
+
+    def __init__(
+        self,
+        times: list[float],
+        joints: list[list[float]],
+        gripper: list[float],
+    ) -> None:
+        self._times   = np.asarray(times,   dtype=np.float64)
+        self._joints  = np.asarray(joints,  dtype=np.float64)   # (N, 7)
+        self._gripper = np.asarray(gripper, dtype=np.float64)   # (N,)
+
+    def query_joints(
+        self, t: float, proprioceptive_latency: float = 0.0
+    ) -> np.ndarray | None:
+        """Return interpolated 7-DOF joint positions at physical time *t*."""
+        t_q = t + proprioceptive_latency
+        if len(self._times) == 0:
+            return None
+        if t_q <= self._times[0]:
+            return self._joints[0].copy()
+        if t_q >= self._times[-1]:
+            return self._joints[-1].copy()
+        idx = int(np.searchsorted(self._times, t_q, side="right")) - 1
+        alpha = (t_q - self._times[idx]) / (self._times[idx + 1] - self._times[idx])
+        return (1.0 - alpha) * self._joints[idx] + alpha * self._joints[idx + 1]
+
+    def query_gripper(
+        self, t: float, gripper_latency: float = 0.0
+    ) -> float | None:
+        """Return interpolated normalized gripper position at physical time *t*.
+
+        Returns ``None`` if history is empty, or ``-1`` sentinel if the
+        controller did not track gripper (no GripperInterface available).
+        """
+        t_q = t + gripper_latency
+        if len(self._times) == 0:
+            return None
+        if t_q <= self._times[0]:
+            return float(self._gripper[0])
+        if t_q >= self._times[-1]:
+            return float(self._gripper[-1])
+        idx = int(np.searchsorted(self._times, t_q, side="right")) - 1
+        alpha = (t_q - self._times[idx]) / (self._times[idx + 1] - self._times[idx])
+        return float((1.0 - alpha) * self._gripper[idx] + alpha * self._gripper[idx + 1])
+
+
 # ── Observation extraction ─────────────────────────────────────────────────────
 
 def extract_observation_train(robot_config: RobotRuntimeConfig, obs_dict: dict[str, Any]) -> dict[str, Any]:
@@ -252,10 +346,40 @@ def extract_observation_eval(
     wrist_camera_id: str | None,
     exterior_camera_id: str | None,
     obs_dict: dict[str, Any],
-) -> dict[str, Any]:
-    """Extract camera images + proprioception for pi0-eval scripts (simpler interface)."""
+    wrist_obs_latency: float = 0.125,
+    exterior_obs_latency: float = 0.175,
+    proprioceptive_latency: float = 0.001,
+    gripper_latency: float = 0.020,
+    state_history: tuple | None = None,
+) -> tuple[dict[str, Any], float]:
+    """Extract camera images + proprioception for pi0-eval scripts.
+
+    Returns ``(obs, t_obs)`` where ``t_obs`` is calibrated to the camera
+    frame's actual capture time, mirroring UMI's timestamp handling.
+
+    **t_obs selection rule** — UMI ``align_camera`` analogy:
+    Both cameras' calibrated capture times are computed; ``t_obs`` is set to
+    the *earlier* of the two (i.e. the camera with the larger latency dominates).
+    The other camera's frame comes from the same ``get_observation()`` call
+    and is used as-is (DROID has no per-camera ring buffer; nearest-frame
+    selection from a buffer can be added in the future).
+
+    **Robot state interpolation:**
+    If *state_history* ``(times, joints, gripper)`` is provided (returned by
+    ``env._robot.get_state_history()``), ``joint_position`` and
+    ``gripper_position`` are interpolated to ``t_obs`` using ``StateInterpolator``
+    with the given latency values.  Falls back to the ``obs_dict["robot_state"]``
+    snapshot when no history is available or interpolation fails.
+
+    Latency parameters (all in seconds; calibrate empirically):
+        wrist_obs_latency:      ZedMini  — placeholder 0.125 s
+        exterior_obs_latency:   RealSense — placeholder 0.175 s
+        proprioceptive_latency: joint read delay — placeholder 0.001 s
+        gripper_latency:        gripper read delay — placeholder 0.020 s
+    """
     image_observations = obs_dict["image"]
 
+    # ── Camera images ──────────────────────────────────────────────────────────
     wrist_image = None
     if wrist_camera_id:
         wrist_image = _find_camera_image(image_observations, wrist_camera_id)
@@ -276,16 +400,62 @@ def extract_observation_eval(
             )
         exterior_image = _to_rgb_image(exterior_image)
 
-    robot_state = obs_dict["robot_state"]
+    # ── t_obs: anchored to the camera with the largest latency ─────────────────
+    # Each camera's calibrated capture time:
+    #   t_obs_cam = read_end_ms / 1000 - obs_latency
+    # t_obs = min(t_obs_wrist, t_obs_exterior)  → the one furthest in the past.
+    # For the secondary camera the current frame (from this get_observation()
+    # call) is used directly; no separate nearest-frame selection is needed
+    # since DROID captures both cameras in one synchronous call.
+    camera_timestamps = obs_dict.get("timestamp", {}).get("cameras", {})
+
+    t_obs_wrist: float | None = None
+    t_obs_ext:   float | None = None
+
+    if wrist_camera_id and wrist_image is not None:
+        ts_ms = _find_camera_ts_ms(camera_timestamps, wrist_camera_id)
+        if ts_ms is not None:
+            t_obs_wrist = ts_ms / 1000.0 - wrist_obs_latency
+
+    if exterior_camera_id and exterior_image is not None:
+        ts_ms = _find_camera_ts_ms(camera_timestamps, exterior_camera_id)
+        if ts_ms is not None:
+            t_obs_ext = ts_ms / 1000.0 - exterior_obs_latency
+
+    candidates = [v for v in (t_obs_wrist, t_obs_ext) if v is not None]
+    if candidates:
+        t_obs = min(candidates)  # earlier = larger latency camera
+    else:
+        # No hardware timestamp (e.g. RealSense not in DROID camera_readers):
+        # fall back to current wall-clock minus the larger of the two latencies.
+        t_obs = time.time() - max(wrist_obs_latency, exterior_obs_latency)
+
+    # ── Robot state: interpolate to t_obs from high-freq history ───────────────
+    robot_state       = obs_dict["robot_state"]
+    joint_position    = np.array(robot_state["joint_positions"])    # snapshot fallback
+    gripper_position  = np.array([robot_state["gripper_position"]])  # snapshot fallback
+
+    if state_history is not None:
+        times_h, joints_h, gripper_h = state_history
+        if len(times_h) >= 2:
+            interp = StateInterpolator(times_h, joints_h, gripper_h)
+            j = interp.query_joints(t_obs, proprioceptive_latency)
+            g = interp.query_gripper(t_obs, gripper_latency)
+            if j is not None:
+                joint_position = j
+            if g is not None and float(g) >= 0.0:   # -1 sentinel → controller not tracking
+                gripper_position = np.array([float(g)])
+
     result: dict[str, Any] = {
-        "joint_position": np.array(robot_state["joint_positions"]),
-        "gripper_position": np.array([robot_state["gripper_position"]]),
+        "joint_position":  joint_position,
+        "gripper_position": gripper_position,
     }
     if wrist_image is not None:
         result["wrist_image"] = wrist_image
     if exterior_image is not None:
         result["exterior_image"] = exterior_image
-    return result
+
+    return result, t_obs
 
 
 # ── pi0 input construction ─────────────────────────────────────────────────────
