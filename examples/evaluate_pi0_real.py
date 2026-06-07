@@ -243,7 +243,7 @@ def run_rollout(
                     # delta_k = clip(v_k, -1, 1) * MAX_JOINT_DELTA  (0.2 rad, per joint)
                     # pos_k   = current_joints + sum(delta_0 .. delta_k)
                     # Source: droid/robot_ik/robot_ik_solver.py, relative_max_joint_delta
-                    _MAX_JOINT_DELTA = 0.2  # rad per step (from DROID IK solver)
+                    _MAX_JOINT_DELTA = 0.1  # rad per step (from DROID IK solver)
                     _running_joints = curr_obs["joint_position"].copy()
                     _arm_abs: list[np.ndarray] = []
                     for _a in new_a:
