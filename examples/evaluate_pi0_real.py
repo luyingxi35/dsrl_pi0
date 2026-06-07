@@ -52,7 +52,7 @@ RESULT_FIELDS = [
 @dataclasses.dataclass(frozen=True)
 class EvalRobotConfig:
     """Lightweight robot config for pi0-eval (wrist + optional exterior camera)."""
-    max_timesteps: int
+    max_duration_s: float = 60.0    # episode timeout in wall-clock seconds
     wrist_camera_id: str | None = None
     exterior_camera_id: str | None = None
     control_frequency_hz: int = DEFAULT_CONTROL_FREQUENCY
@@ -89,6 +89,10 @@ class ExecutionConfig:
     action_exec_latency: float = 0.01
     # Frequency (Hz) of the high-frequency joint position controller.
     controller_frequency: float = 200.0
+    # Scale factor applied to DROID's training max_joint_delta (0.2 rad/step).
+    # action_scale=1.0 → 0.20 rad/step (full training speed)
+    # action_scale=0.5 → 0.10 rad/step (half speed, safer default)
+    action_scale: float = 0.5
 
 
 class RobotIO:
@@ -187,7 +191,14 @@ def run_rollout(
     env_steps = 0
 
     try:
-        for t in tqdm(range(robot_config.max_timesteps), desc=f"pi0 eval episode {episode_id}"):
+        pbar = tqdm(desc=f"pi0 eval episode {episode_id}", unit="step")
+        t = 0
+        while True:
+            # ── Timeout check (time-based, frequency-independent) ──────────────
+            if time.time() - start_time >= robot_config.max_duration_s:
+                decision = (False, "timeout")
+                break
+
             decision = ui.poll()
             if decision is not None:
                 break
@@ -240,10 +251,11 @@ def run_rollout(
 
                     # Arm: integrate joint_velocity → cumulative absolute joint angles.
                     # pi0 outputs normalized joint velocities in [-1, 1].
-                    # delta_k = clip(v_k, -1, 1) * MAX_JOINT_DELTA  (0.2 rad, per joint)
+                    # delta_k = clip(v_k, -1, 1) * MAX_JOINT_DELTA  (rad/step)
+                    # MAX_JOINT_DELTA = 0.2 (DROID training constant) * action_scale
                     # pos_k   = current_joints + sum(delta_0 .. delta_k)
                     # Source: droid/robot_ik/robot_ik_solver.py, relative_max_joint_delta
-                    _MAX_JOINT_DELTA = 0.1  # rad per step (from DROID IK solver)
+                    _MAX_JOINT_DELTA = 0.2 * exec_config.action_scale  # rad per step
                     _running_joints = curr_obs["joint_position"].copy()
                     _arm_abs: list[np.ndarray] = []
                     for _a in new_a:
@@ -307,7 +319,11 @@ def run_rollout(
             if sleep_s > 0:
                 time.sleep(sleep_s)
 
+            pbar.update(1)
+            t += 1
+
     finally:
+        pbar.close()
         env._robot.stop_trajectory_controller()   # stops HighFreqController on NUC
         inference_in_progress.wait(timeout=5.0)
 
@@ -335,7 +351,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--instruction", default="put the spoon on the plate")
     parser.add_argument("--eval_episodes", default=10, type=int)
-    parser.add_argument("--max_rollout_steps", default=200, type=int)
+    parser.add_argument("--max_duration_s", default=60.0, type=float,
+        help="Max episode duration in seconds (timeout). Default: 60.")
     parser.add_argument("--execution_steps", default=6, type=int,
         help="Actions to execute before re-inferring (analogous to UMI steps_per_inference). Default: 6.")
     parser.add_argument("--robot_action_latency", default=0.20, type=float,
@@ -348,6 +365,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Target DROID control frequency in Hz. Default: {DEFAULT_CONTROL_FREQUENCY}.")
     parser.add_argument("--controller_frequency", default=200.0, type=float,
         help="High-frequency joint controller loop rate in Hz. Default: 200.")
+    parser.add_argument("--action_scale", default=0.5, type=float,
+        help="Scale factor on DROID training max_joint_delta (0.2 rad/step). "
+             "action_scale=1.0 = full speed, 0.5 = half speed. Default: 0.5.")
     # ── Camera / proprioception observation latencies ──────────────────────────
     parser.add_argument("--wrist_camera_obs_latency", default=None, type=float,
         help="ZedMini wrist camera obs latency (s). "
@@ -386,18 +406,21 @@ def run_evaluation(args: argparse.Namespace) -> None:
         ),
         action_exec_latency=args.action_exec_latency,
         controller_frequency=args.controller_frequency,
+        action_scale=args.action_scale,
     )
     logging.info(
         "ExecutionConfig: execution_steps=%d robot_action_latency=%.3fs "
-        "gripper_action_latency=%.3fs action_exec_latency=%.3fs controller_frequency=%.0fHz",
+        "gripper_action_latency=%.3fs action_exec_latency=%.3fs "
+        "controller_frequency=%.0fHz action_scale=%.2f (max_joint_delta=%.3f rad/step)",
         exec_config.execution_steps, exec_config.robot_action_latency,
         exec_config.gripper_action_latency, exec_config.action_exec_latency,
         exec_config.controller_frequency,
+        exec_config.action_scale, 0.2 * exec_config.action_scale,
     )
 
     _cfg_defaults = EvalRobotConfig.__dataclass_fields__
     robot_config = EvalRobotConfig(
-        max_timesteps=args.max_rollout_steps,
+        max_duration_s=args.max_duration_s,
         wrist_camera_id=DEFAULT_WRIST_CAMERA_ID if args.use_wrist_camera else None,
         exterior_camera_id=DEFAULT_EXTERIOR_CAMERA_ID if args.use_exterior_camera else None,
         control_frequency_hz=args.control_frequency_hz,
