@@ -1,4 +1,4 @@
-# Evaluation Code Tests
+# Evaluation Code Tests & Diagnostics
 
 测试分三个级别，逐级递进：
 
@@ -72,6 +72,53 @@ python3 examples/evaluate_pi0_real.py \
 - `t_obs drift: X ms` — X 应 ≈ `wrist_camera_obs_latency × 1000`
 - `State history: N entries` — N ≥ 50
 - 5秒后 `reason=timeout`，episode 正常结束，无报错
+
+---
+
+---
+
+## 4. 深度诊断（需机器人，产生轨迹数据 + 可视化）
+
+### 4a. 采集诊断数据
+
+在 `--diagnostic_dir` 目录保存每个 episode 的 `.npz` 诊断文件：
+
+```bash
+python3 examples/evaluate_pi0_real.py \
+    --instruction "test" \
+    --eval_episodes 1 \
+    --max_duration_s 10 \
+    --action_scale 0.1 \
+    --execution_steps 4 \
+    --control_frequency_hz 10 \
+    --use_wrist_camera 1 \
+    --policy_host 127.0.0.1 --policy_port 8000 \
+    --diagnostic_dir ./logs/diagnostics
+```
+
+### 4b. 生成可视化 PDF
+
+```bash
+python3 examples/tests/visualize_rollout.py \
+    --npz ./logs/diagnostics/episode_000.npz \
+    --output ./logs/diagnostics/episode_000_analysis.pdf
+```
+
+**生成 6 张图：**
+
+| 图 | 内容 | 验证什么 |
+|----|------|---------|
+| Fig 1 | 7关节轨迹（planned vs actual） | 机器人是否跟随命令；积分有无突变 |
+| Fig 2 | Action chunk 利用率柱状图 | is_new 过滤多少；execution_steps 截断多少 |
+| Fig 3 | Tick 时长直方图 + 频率漂移 | 控制频率是否稳定 10Hz |
+| Fig 4 | t_obs 漂移 + state buffer 覆盖 | 相机时间戳是否正确；buffer 是否充足 |
+| Fig 5 | 跨 chunk 的位置连续性 | 相邻 chunk 无跳跃（积分基准正确） |
+| Fig 6 | 夹爪指令时序 | 夹爪是否按预期开关 |
+
+**Fig 1 解读指南：**
+- Blue（planned）和 Red（actual）紧密重合 → 机器人执行正常
+- Blue 有大幅跳跃（chunk 边界处）→ 积分起点错误（已知 bug 检测）
+- Red 滞后 Blue 固定时间 → robot_action_latency 可调
 
 ---
 
