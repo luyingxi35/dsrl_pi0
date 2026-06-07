@@ -69,10 +69,12 @@ class ExecutionConfig:
 
     # Number of actions to execute before re-inferring (replaces query_freq).
     execution_steps: int = 6
-    # Time (s) from env.step() call to robot physically responding.
-    # The scheduler advances each action's call time by this amount so the
-    # robot reaches the target pose at the intended moment.
+    # Time (s) from arm command to robot physically responding.
+    # The scheduler advances each arm command by this amount so the robot
+    # reaches the target pose at the intended moment.
     robot_action_latency: float = 0.20
+    # Time (s) from gripper command to gripper physically responding.
+    gripper_action_latency: float = 0.15
     # Minimum lead time (s) required to schedule an action.
     # Actions whose target_time <= curr_time + action_exec_latency are
     # considered stale and skipped (or handled via fallback).
@@ -416,9 +418,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.1,
         type=float,
         help=(
-            "Seconds between env.step() call and the robot physically responding. "
-            "Each action's scheduled call time is advanced by this amount so the "
-            "robot reaches the target state at the intended moment. Default: 0.1."
+            "Seconds between arm command and the robot physically responding. "
+            "Arm command time is advanced by this amount so the robot reaches "
+            "the target state at the intended moment. Default: 0.1."
+        ),
+    )
+    parser.add_argument(
+        "--gripper_action_latency",
+        default=None,
+        type=float,
+        help=(
+            "Seconds between gripper command and the gripper physically responding. "
+            "Defaults to --robot_action_latency for backward-compatible timing."
         ),
     )
     parser.add_argument(
@@ -528,9 +539,12 @@ def run_rollout(
         finally:
             inference_in_progress.clear()
 
-    # ── Scheduled action buffer ────────────────────────────────────────────
-    # Sorted list of (target_time, action); main thread pops and executes.
-    scheduled_actions: list[tuple[float, np.ndarray]] = []
+    # ── Scheduled action buffers ───────────────────────────────────────────
+    # Sorted lists of (target_time, action); main thread pops and executes
+    # arm/gripper components independently so their latency compensation can
+    # differ while DROID RPC calls remain on the main thread.
+    scheduled_arm_actions: list[tuple[float, np.ndarray]] = []
+    scheduled_gripper_actions: list[tuple[float, float]] = []
 
     # ── Episode bookkeeping ────────────────────────────────────────────────
     ui.set_running(episode_id, completed, successes)
@@ -568,10 +582,12 @@ def run_rollout(
             if np.any(is_new):
                 new_a = new_actions[is_new][: exec_config.execution_steps]
                 new_t = action_timestamps[is_new][: exec_config.execution_steps]
-                scheduled_actions = [
-                    (ts, binarize_and_clip_action(a))
-                    for ts, a in zip(new_t, new_a)
-                ]
+                scheduled_arm_actions = []
+                scheduled_gripper_actions = []
+                for ts, action in zip(new_t, new_a):
+                    clipped_action = binarize_and_clip_action(action)
+                    scheduled_arm_actions.append((ts, clipped_action[:-1].copy()))
+                    scheduled_gripper_actions.append((ts, float(clipped_action[-1])))
             else:
                 logging.warning(
                     "run_rollout: all actions stale at t=%d "
@@ -580,10 +596,11 @@ def run_rollout(
 
         # ── 3. Trigger inference in background thread if needed ────────────
         # Fires on the regular execution_steps cadence, or immediately when
-        # scheduled_actions is exhausted (inference ran longer than expected).
+        # both scheduled component queues are exhausted (inference ran longer
+        # than expected).
         should_infer = not inference_in_progress.is_set() and (
             t % exec_config.execution_steps == 0
-            or not scheduled_actions
+            or (not scheduled_arm_actions and not scheduled_gripper_actions)
         )
         if should_infer:
             inference_in_progress.set()
@@ -594,20 +611,28 @@ def run_rollout(
                 name=f"Infer-t{t}",
             ).start()
 
-        # ── 4. Execute scheduled action (main thread, gevent-safe) ─────────
-        # Pop all actions whose adjusted call time
-        # (= target_time - robot_action_latency) has already passed.
-        # If multiple are due, execute the most recent one.
+        # ── 4. Execute scheduled actions (main thread, gevent-safe) ────────
+        # Pop all component commands whose adjusted call time has already
+        # passed. If multiple are due for a component, execute the newest one.
         curr_time = time.time()
-        action_to_exec = None
+        arm_action_to_exec = None
         while (
-            scheduled_actions
-            and scheduled_actions[0][0] - exec_config.robot_action_latency <= curr_time
+            scheduled_arm_actions
+            and scheduled_arm_actions[0][0] - exec_config.robot_action_latency <= curr_time
         ):
-            _, action_to_exec = scheduled_actions.pop(0)
+            _, arm_action_to_exec = scheduled_arm_actions.pop(0)
 
-        if action_to_exec is not None:
-            env.step(action_to_exec)
+        gripper_action_to_exec = None
+        while (
+            scheduled_gripper_actions
+            and scheduled_gripper_actions[0][0] - exec_config.gripper_action_latency <= curr_time
+        ):
+            _, gripper_action_to_exec = scheduled_gripper_actions.pop(0)
+
+        if arm_action_to_exec is not None:
+            execute_arm_action(env, arm_action_to_exec)
+        if gripper_action_to_exec is not None:
+            execute_gripper_action(env, gripper_action_to_exec)
 
         # ── 5. UI & bookkeeping ────────────────────────────────────────────
         ui.update_camera_previews(
@@ -758,6 +783,16 @@ def binarize_and_clip_action(action):
     return np.clip(action, -1, 1)
 
 
+def execute_arm_action(env: Any, arm_action: np.ndarray) -> None:
+    full_action = np.concatenate([arm_action, np.zeros((1,))])
+    action_info = env._robot.create_action_dict(full_action, action_space=env.action_space)
+    env._robot.update_joints(np.asarray(action_info["joint_position"]), velocity=False, blocking=False)
+
+
+def execute_gripper_action(env: Any, gripper_position: float) -> None:
+    env._robot.update_gripper(float(gripper_position), velocity=False, blocking=False)
+
+
 def save_rollout_video(outputdir: Path, episode_id: int, image_list: list[np.ndarray]) -> str:
     if not image_list:
         return ""
@@ -816,12 +851,19 @@ def run_evaluation(args: argparse.Namespace) -> None:
     exec_config = ExecutionConfig(
         execution_steps=args.execution_steps,
         robot_action_latency=args.robot_action_latency,
+        gripper_action_latency=(
+            args.robot_action_latency
+            if args.gripper_action_latency is None
+            else args.gripper_action_latency
+        ),
         action_exec_latency=args.action_exec_latency,
     )
     logging.info(
-        "ExecutionConfig: execution_steps=%d robot_action_latency=%.3fs action_exec_latency=%.3fs",
+        "ExecutionConfig: execution_steps=%d robot_action_latency=%.3fs "
+        "gripper_action_latency=%.3fs action_exec_latency=%.3fs",
         exec_config.execution_steps,
         exec_config.robot_action_latency,
+        exec_config.gripper_action_latency,
         exec_config.action_exec_latency,
     )
 
