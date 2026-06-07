@@ -5,9 +5,9 @@ import argparse
 import csv
 import dataclasses
 import datetime as dt
-import heapq
 import logging
 from pathlib import Path
+import queue
 import sys
 import threading
 import time
@@ -106,80 +106,6 @@ class PolicyService:
 
     def infer(self, obs):
         return self._client.infer(obs)
-
-
-class ActionScheduler(threading.Thread):
-    """Background thread that executes timestamped actions at their scheduled wall-clock times.
-
-    Decouples policy inference from robot execution so the robot keeps moving
-    while the main thread is blocked on policy_service.infer().
-
-    Usage::
-
-        scheduler = ActionScheduler(env, frequency=15, exec_config=cfg, env_lock=lock)
-        scheduler.start()
-        scheduler.schedule_waypoint(action, target_time=t)   # non-blocking
-        ...
-        scheduler.stop()
-        scheduler.join()
-    """
-
-    def __init__(
-        self,
-        env: Any,
-        frequency: float,
-        exec_config: ExecutionConfig,
-        env_lock: threading.Lock,
-    ) -> None:
-        super().__init__(daemon=True, name="ActionScheduler")
-        self._env = env
-        self._dt = 1.0 / frequency
-        self._exec_config = exec_config
-        self._env_lock = env_lock
-        # min-heap entries: (adjusted_target_time, monotonic_seq, action)
-        self._heap: list[tuple[float, int, np.ndarray]] = []
-        self._heap_lock = threading.Lock()
-        self._seq = 0  # monotonic counter to break ties in the heap
-        self._stop_event = threading.Event()
-
-    def schedule_waypoint(self, action: np.ndarray, target_time: float) -> None:
-        """Enqueue *action* to be executed at (target_time - robot_action_latency).
-
-        Non-blocking: returns immediately after inserting into the internal heap.
-        """
-        adjusted = target_time - self._exec_config.robot_action_latency
-        with self._heap_lock:
-            heapq.heappush(self._heap, (adjusted, self._seq, action.copy()))
-            self._seq += 1
-
-    def stop(self) -> None:
-        """Signal the scheduler loop to exit."""
-        self._stop_event.set()
-
-    def run(self) -> None:
-        t_start = time.time()
-        iter_idx = 0
-        while not self._stop_event.is_set():
-            t_now = time.time()
-            action_to_exec = None
-
-            with self._heap_lock:
-                # Drain all due entries (adjusted_time <= now).
-                # If multiple actions are due, keep only the latest-scheduled one
-                # (highest seq); earlier ones are stale.
-                while self._heap and self._heap[0][0] <= t_now:
-                    _, _, action_to_exec = heapq.heappop(self._heap)
-
-            if action_to_exec is not None:
-                with self._env_lock:
-                    self._env.step(action_to_exec)
-
-            # Regulate at control frequency.
-            iter_idx += 1
-            t_next = t_start + iter_idx * self._dt
-            sleep_s = t_next - time.time()
-            if sleep_s > 0:
-                time.sleep(sleep_s)
 
 
 class RobotIO:
@@ -582,88 +508,127 @@ def run_rollout(
     runtime_config = robot_io.runtime_config
     dt_step = 1.0 / runtime_config.control_frequency_hz
 
-    # env_lock guards concurrent access to env between the main thread
-    # (get_observation) and the ActionScheduler thread (step).
-    env_lock = threading.Lock()
-    scheduler = ActionScheduler(env, runtime_config.control_frequency_hz, exec_config, env_lock)
-    scheduler.start()
+    # ── Inference concurrency ──────────────────────────────────────────────
+    # env.step() uses zerorpc/gevent and MUST stay on the main thread.
+    # policy_service.infer() uses openpi websocket (not gevent) and is safe
+    # to run in a background thread, keeping the control loop non-blocking.
+    #
+    # Background thread puts (actions_array, obs_timestamp) here when done.
+    # Unbounded; main thread drains it each tick, keeping only the latest.
+    inference_queue: queue.Queue = queue.Queue()
+    inference_in_progress = threading.Event()
 
+    def _run_inference(obs_snapshot: dict, t_obs: float) -> None:
+        try:
+            request_data = get_pi0_input(obs_snapshot, args.instruction)
+            response = policy_service.infer(request_data)
+            inference_queue.put((np.asarray(response["actions"]), t_obs))
+        except Exception:
+            logging.exception("run_rollout: inference failed in background thread")
+        finally:
+            inference_in_progress.clear()
+
+    # ── Scheduled action buffer ────────────────────────────────────────────
+    # Sorted list of (target_time, action); main thread pops and executes.
+    scheduled_actions: list[tuple[float, np.ndarray]] = []
+
+    # ── Episode bookkeeping ────────────────────────────────────────────────
     ui.set_running(episode_id, completed, successes)
     start_time = time.time()
-    t_loop_start = start_time  # wall-clock anchor for absolute step deadlines
+    t_loop_start = start_time
     timestamp = dt.datetime.now().isoformat(timespec="seconds")
-    image_list = []
+    image_list: list[np.ndarray] = []
     decision: tuple[bool, str] | None = None
     env_steps = 0
 
-    try:
-        for t in tqdm(range(runtime_config.max_timesteps), desc=f"pi0 eval episode {episode_id}"):
-            decision = ui.poll()
-            if decision is not None:
+    for t in tqdm(range(runtime_config.max_timesteps), desc=f"pi0 eval episode {episode_id}"):
+        decision = ui.poll()
+        if decision is not None:
+            break
+
+        t_step_end = t_loop_start + (t + 1) * dt_step
+
+        # ── 1. Get observation (main thread, gevent-safe) ──────────────────
+        curr_obs = extract_camera_observation(runtime_config, env.get_observation())
+        obs_timestamp = time.time()
+
+        # ── 2. Drain inference queue; keep only the most recent result ─────
+        latest_result = None
+        while not inference_queue.empty():
+            try:
+                latest_result = inference_queue.get_nowait()
+            except queue.Empty:
                 break
 
-            # ── Observation (guarded so it doesn't race with scheduler's env.step) ──
-            with env_lock:
-                curr_obs = extract_camera_observation(runtime_config, env.get_observation())
-            obs_timestamp = time.time()  # proxy for when the obs was captured
+        if latest_result is not None:
+            new_actions, t_obs = latest_result
+            action_timestamps = t_obs + np.arange(len(new_actions)) * dt_step
+            curr_time = time.time()
+            is_new = action_timestamps > (curr_time + exec_config.action_exec_latency)
+            if np.any(is_new):
+                new_a = new_actions[is_new][: exec_config.execution_steps]
+                new_t = action_timestamps[is_new][: exec_config.execution_steps]
+                scheduled_actions = [
+                    (ts, binarize_and_clip_action(a))
+                    for ts, a in zip(new_t, new_a)
+                ]
+            else:
+                logging.warning(
+                    "run_rollout: all actions stale at t=%d "
+                    "(inference latency exceeded obs horizon)", t
+                )
 
-            ui.update_camera_previews(
-                wrist_image=curr_obs.get("wrist_image"),
-                exterior_image=curr_obs.get("exterior_image"),
-            )
-            image_list.append(_select_video_frame(curr_obs))
+        # ── 3. Trigger inference in background thread if needed ────────────
+        # Fires on the regular execution_steps cadence, or immediately when
+        # scheduled_actions is exhausted (inference ran longer than expected).
+        should_infer = not inference_in_progress.is_set() and (
+            t % exec_config.execution_steps == 0
+            or not scheduled_actions
+        )
+        if should_infer:
+            inference_in_progress.set()
+            threading.Thread(
+                target=_run_inference,
+                args=(curr_obs, obs_timestamp),
+                daemon=True,
+                name=f"Infer-t{t}",
+            ).start()
 
-            # ── Inference: once every execution_steps control steps ──
-            if t % exec_config.execution_steps == 0:
-                request_data = get_pi0_input(curr_obs, args.instruction)
-                response = policy_service.infer(request_data)
-                actions = np.asarray(response["actions"])
+        # ── 4. Execute scheduled action (main thread, gevent-safe) ─────────
+        # Pop all actions whose adjusted call time
+        # (= target_time - robot_action_latency) has already passed.
+        # If multiple are due, execute the most recent one.
+        curr_time = time.time()
+        action_to_exec = None
+        while (
+            scheduled_actions
+            and scheduled_actions[0][0] - exec_config.robot_action_latency <= curr_time
+        ):
+            _, action_to_exec = scheduled_actions.pop(0)
 
-                # Assign an absolute target execution time to each action,
-                # anchored at the moment the observation was captured.
-                action_timestamps = obs_timestamp + np.arange(len(actions)) * dt_step
+        if action_to_exec is not None:
+            env.step(action_to_exec)
 
-                # Discard actions that are already too close to execute in time.
-                curr_time = time.time()
-                is_new = action_timestamps > (curr_time + exec_config.action_exec_latency)
+        # ── 5. UI & bookkeeping ────────────────────────────────────────────
+        ui.update_camera_previews(
+            wrist_image=curr_obs.get("wrist_image"),
+            exterior_image=curr_obs.get("exterior_image"),
+        )
+        image_list.append(_select_video_frame(curr_obs))
+        env_steps = t + 1
+        ui.update_step(episode_id, env_steps, completed, successes)
 
-                if not np.any(is_new):
-                    # Inference took so long that all actions are stale.
-                    # Fall back: schedule the last action at the next clean step slot.
-                    next_slot = int(np.ceil((curr_time - t_loop_start) / dt_step))
-                    fallback_time = t_loop_start + next_slot * dt_step
-                    logging.warning(
-                        "run_rollout: all actions stale at t=%d; "
-                        "scheduling fallback at t_loop+%.3fs",
-                        t,
-                        fallback_time - t_loop_start,
-                    )
-                    scheduler.schedule_waypoint(
-                        binarize_and_clip_action(actions[-1]), fallback_time
-                    )
-                else:
-                    # Take at most execution_steps actions from the non-stale set.
-                    new_actions = actions[is_new][: exec_config.execution_steps]
-                    new_timestamps = action_timestamps[is_new][: exec_config.execution_steps]
-                    for action, ts in zip(new_actions, new_timestamps):
-                        scheduler.schedule_waypoint(binarize_and_clip_action(action), ts)
+        decision = ui.poll()
+        if decision is not None:
+            break
 
-            env_steps = t + 1
-            ui.update_step(episode_id, env_steps, completed, successes)
+        # ── 6. Wait until tick deadline ────────────────────────────────────
+        sleep_s = t_step_end - time.time()
+        if sleep_s > 0:
+            time.sleep(sleep_s)
 
-            decision = ui.poll()
-            if decision is not None:
-                break
-
-            # ── Wait until this step's absolute deadline ──
-            t_step_end = t_loop_start + (t + 1) * dt_step
-            sleep_s = t_step_end - time.time()
-            if sleep_s > 0:
-                time.sleep(sleep_s)
-
-    finally:
-        scheduler.stop()
-        scheduler.join(timeout=2.0)
+    # Allow any in-flight inference to finish before returning.
+    inference_in_progress.wait(timeout=5.0)
 
     if decision is None:
         decision = (False, "timeout")
