@@ -154,6 +154,7 @@ python3 examples/evaluate_pi0_real.py \
 --max_rollout_steps 400 \
 --execution_steps 6 \
 --control_frequency_hz 10 \
+--controller_frequency 200 \
 --use_wrist_camera 1 \
 --use_exterior_camera 0 \
 --policy_host 127.0.0.1 \
