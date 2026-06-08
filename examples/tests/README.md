@@ -88,8 +88,8 @@ python3 examples/evaluate_pi0_real.py \
     --instruction "test" \
     --eval_episodes 1 \
     --max_duration_s 10 \
-    --action_scale 0.1 \
-    --execution_steps 4 \
+    --action_scale 0.5 \
+    --execution_steps 8 \
     --control_frequency_hz 10 \
     --use_wrist_camera 1 \
     --policy_host 127.0.0.1 --policy_port 8000 \
