@@ -292,11 +292,13 @@ def run_rollout(
                     _diag_n_scheduled = len(new_t)
 
                     # Send to NUC's HighFreqController via zerorpc.
-                    # Subtract robot_action_latency so the 200Hz loop calls
-                    # update_desired_joint_positions early enough to arrive on time.
-                    # Lists (not numpy) because msgpack serialises them natively.
+                    # Subtract robot_action_latency so the robot arrives at each
+                    # target at the intended time.  Convert to time offsets from
+                    # now (rather than absolute wall-clock) so the NUC-side
+                    # wall→mono conversion is immune to GPU-NUC clock skew.
                     arm_times = new_t - exec_config.robot_action_latency
-                    env._robot.add_waypoints(arm_times.tolist(), arm_positions.tolist())
+                    arm_time_offsets = arm_times - time.time()   # seconds from now
+                    env._robot.add_waypoints(arm_time_offsets.tolist(), arm_positions.tolist())
                     _diag_arm_times     = arm_times
                     _diag_arm_positions = arm_positions
 
