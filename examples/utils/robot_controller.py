@@ -90,11 +90,20 @@ class JointTrajectoryInterpolator:
         times     = np.asarray(times,     dtype=np.float64)
         positions = np.asarray(positions, dtype=np.float64)
 
-        # ── 1. Continuity: prepend current interpolated position ────────────
+        # ── 1. Continuity: bridge from current commanded position ───────────
+        # arm_times = new_t - robot_action_latency puts times[0] ~170ms in the
+        # past, so the old `curr_time < times[0]` condition was never True and
+        # the bridge never fired.  Fix: trim past waypoints, always bridge.
         curr_pos = self.__call__(curr_time)
-        if curr_pos is not None and len(times) > 0 and curr_time < times[0]:
-            times     = np.concatenate([[curr_time], times])
-            positions = np.vstack([curr_pos[None], positions])
+        if curr_pos is not None and len(times) > 0:
+            future_mask = times > curr_time
+            if np.any(future_mask):
+                times     = np.concatenate([[curr_time], times[future_mask]])
+                positions = np.vstack([curr_pos[None], positions[future_mask]])
+            else:
+                traj_duration = float(times[-1] - times[0]) if len(times) > 1 else 0.1
+                times     = np.array([curr_time, curr_time + max(traj_duration, 0.05)])
+                positions = np.vstack([curr_pos[None], positions[[-1]]])
 
         # ── 2. Speed cap: extend waypoint times where needed ────────────────
         for i in range(1, len(times)):
@@ -160,21 +169,17 @@ class HighFreqController(threading.Thread):
     def add_waypoints(self, times: np.ndarray, positions: np.ndarray) -> None:
         """Replace the current trajectory batch. Non-blocking, thread-safe.
 
-        The incoming ``times`` are wall-clock (``time.time()``) values as
-        supplied by the GPU server.  They are converted to ``time.monotonic()``
-        at this boundary so the internal interpolator is unaffected by NTP
-        adjustments.  A single offset sample is sufficient because NTP drift
-        is orders of magnitude slower than the inter-call interval (~100 ms).
+        The incoming ``times`` are **seconds relative to when the GPU server
+        called add_waypoints** (``arm_times - time.time()`` on the GPU).
+        Using offsets instead of absolute wall-clock values eliminates
+        GPU-NUC clock-skew error.  Residual network latency (~5 ms) is
+        acceptable and handled by update_waypoints' trim-and-bridge logic.
 
         Args:
-            times: (N,) wall-clock target times (seconds, from time.time()).
-                   Each entry is compensated for robot_action_latency before
-                   being passed here (see run_rollout).
+            times: (N,) float64 time offsets (seconds from GPU call time).
             positions: (N, 7) absolute joint angles in radians.
         """
-        # Convert wall-clock → monotonic once at the entry boundary.
-        _wall_to_mono = time.monotonic() - time.time()
-        mono_times = np.asarray(times, dtype=np.float64) + _wall_to_mono
+        mono_times = time.monotonic() + np.asarray(times, dtype=np.float64)
         with self._lock:
             self._interp.update_waypoints(
                 mono_times,
