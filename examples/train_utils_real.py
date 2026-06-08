@@ -22,6 +22,7 @@ from utils.real_robot_common import (
     extract_observation_train as _extract_observation,
     get_pi0_input_train,
     select_video_frame_train as _select_rollout_video_frame,
+    binarize_and_clip_action,
 )
 
 EMPTY_IMAGE_SHAPE = (224, 224, 3)
@@ -175,9 +176,34 @@ def collect_traj(variant, agent, env, i, policy_service=None, wandb_logger=None,
     except Exception as e:
         print(f"Environment reset failed")
         import traceback
-        traceback.print_exc() 
+        traceback.print_exc()
         import pdb; pdb.set_trace()
+
+    # ── Start HighFreqController (aligned with evaluate_pi0_real.py) ──────────
+    # Warm-up: triggers joint impedance controller on NUC before HighFreqController.
+    try:
+        _init_joints = np.array(env.get_observation()["robot_state"]["joint_positions"])
+        env._robot.update_joints(_init_joints, velocity=False, blocking=False)
+        time.sleep(0.15)
+        env._robot.start_trajectory_controller(
+            float(getattr(runtime_config, "controller_frequency", 200.0))
+        )
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        import pdb; pdb.set_trace()
+
+    scheduled_gripper_actions: list[tuple[float, float]] = []
+    _robot_action_latency   = float(getattr(runtime_config, "robot_action_latency",   0.20))
+    _gripper_action_latency = float(getattr(runtime_config, "gripper_action_latency", 0.15))
+    _max_joint_speed_rad_s  = float(getattr(runtime_config, "max_joint_speed_rad_s",  0.1))
+    _action_scale           = float(getattr(runtime_config, "action_scale", 0.5))
+    _MAX_JOINT_DELTA        = 0.2 * _action_scale
+    _wrist_obs_latency      = float(getattr(runtime_config, "wrist_camera_obs_latency", 0.084))
+    _proprioceptive_latency = float(getattr(runtime_config, "proprioceptive_latency",   0.0003))
+
     step_time = 1 / runtime_config.control_frequency_hz
+    dt_step   = step_time                                   # seconds per control tick
     if query_frequency <= 0:
         raise ValueError(f"query_freq must be positive, got {query_frequency}.")
     if query_frequency > agent.action_chunk_shape[0]:
@@ -199,14 +225,18 @@ def collect_traj(variant, agent, env, i, policy_service=None, wandb_logger=None,
             step_started = time.time()
             try:
                 _env_obs = env.get_observation()
+                state_history = env._robot.get_state_history(n=100)
             except Exception as e:
                 print(f"Environment get obs failed")
                 import traceback
                 traceback.print_exc()
                 import pdb; pdb.set_trace()
-            curr_obs = _extract_observation(
-                    runtime_config,
-                    _env_obs,
+            curr_obs, t_obs = _extract_observation(
+                runtime_config,
+                _env_obs,
+                state_history=state_history,
+                wrist_obs_latency=_wrist_obs_latency,
+                proprioceptive_latency=_proprioceptive_latency,
             )
             image_list.append(_select_rollout_video_frame(curr_obs, runtime_config))
             ui.update_camera_previews(
@@ -236,7 +266,38 @@ def collect_traj(variant, agent, env, i, policy_service=None, wandb_logger=None,
                     actions_noise, noise = make_full_horizon_noise(actions_noise, agent.action_chunk_shape)
                 action_list.append(actions_noise)
                 obs_list.append(obs_dict)
+                # action = pi0 server output; this is the final executable chunk.
+                # (actions_noise = RL agent output fed to pi0 as denoising noise)
                 action = policy_service.infer(request_data, noise=np.asarray(noise))["actions"]
+
+                # ── Arm: integrate pi0 action chunk → add_waypoints ──────────
+                # Integrate from t_obs joint state (aligned with eval).
+                _running_joints = curr_obs["joint_position"].copy()
+                abs_positions: list[np.ndarray] = []
+                for _a in action[:query_frequency]:
+                    _vel = np.clip(np.asarray(_a[:-1]), -1.0, 1.0)
+                    _running_joints = _running_joints + _vel * _MAX_JOINT_DELTA
+                    abs_positions.append(_running_joints.copy())
+                abs_positions_arr = np.array(abs_positions)   # (query_frequency, 7)
+
+                arm_target_times = t_obs + np.arange(1, query_frequency + 1) * dt_step
+                arm_offsets      = (arm_target_times - _robot_action_latency) - time.time()
+                try:
+                    env._robot.add_waypoints(
+                        arm_offsets.tolist(),
+                        abs_positions_arr.tolist(),
+                        max_joint_speed_rad_s=_max_joint_speed_rad_s,
+                    )
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+                    import pdb; pdb.set_trace()
+
+                # ── Gripper: schedule timestamped commands ────────────────────
+                scheduled_gripper_actions = [
+                    (float(ts), float(binarize_and_clip_action(np.asarray(_a))[-1]))
+                    for ts, _a in zip(arm_target_times.tolist(), action[:query_frequency])
+                ]
 
             decision = ui.poll()
             if decision is not None:
@@ -244,22 +305,19 @@ def collect_traj(variant, agent, env, i, policy_service=None, wandb_logger=None,
             if action is None:
                 raise RuntimeError("No action chunk available. This should be impossible at t=0.")
 
-            action_t = action[t % query_frequency]
-            
-            # binarize gripper action.
-            if action_t[-1].item() > 0.5:
-                action_t = np.concatenate([action_t[:-1], np.ones((1,))])
-            else:
-                action_t = np.concatenate([action_t[:-1], np.zeros((1,))])
-            action_t = np.clip(action_t, -1, 1)
-            
-            try:
-                env.step(action_t)
-            except Exception as e:
-                print(f"Environment step failed")
-                import traceback
-                traceback.print_exc()  # This prints the full traceback
-                import pdb; pdb.set_trace()
+            # ── Execute due gripper commands (arm handled by HighFreqController) ──
+            curr_time_now = time.time()
+            gripper_to_exec = None
+            while (scheduled_gripper_actions and
+                   scheduled_gripper_actions[0][0] - _gripper_action_latency <= curr_time_now):
+                _, gripper_to_exec = scheduled_gripper_actions.pop(0)
+            if gripper_to_exec is not None:
+                try:
+                    env._robot.update_gripper(gripper_to_exec, velocity=False, blocking=False)
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+                    import pdb; pdb.set_trace()
 
             env_steps = t + 1
             ui.update_step(traj_id, env_steps, completed, successes)
@@ -292,7 +350,7 @@ def collect_traj(variant, agent, env, i, policy_service=None, wandb_logger=None,
             import pdb; pdb.set_trace()
         
         # add last observation
-        curr_obs = _extract_observation(
+        curr_obs, _ = _extract_observation(
                     runtime_config,
                     _env_obs,
             )
@@ -309,6 +367,12 @@ def collect_traj(variant, agent, env, i, policy_service=None, wandb_logger=None,
         print(f'Rollout Done')
         
     finally:
+        # ── Stop HighFreqController before reset ──────────────────────────────
+        try:
+            env._robot.stop_trajectory_controller()
+        except Exception:
+            pass
+
         query_steps = len(action_list)
         if query_steps == 0:
             rewards = np.array([], dtype=np.float32)

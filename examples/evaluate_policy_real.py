@@ -205,7 +205,7 @@ def run_rollout(
 
         step_started = time.time()
         _env_obs = env.get_observation()
-        curr_obs = _extract_observation(runtime_config, _env_obs)
+        curr_obs, _ = _extract_observation(runtime_config, _env_obs)
         exterior_image_key = runtime_config.camera_to_use + "_image"
         ui.update_camera_previews(
             wrist=curr_obs["wrist_image"],
