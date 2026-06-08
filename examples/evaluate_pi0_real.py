@@ -60,7 +60,7 @@ class EvalRobotConfig:
     # Each value = time from actual frame capture to when read_end is recorded.
     # Used to anchor t_obs to the true camera capture moment (UMI-style).
     # t_obs = camera_read_end_ms / 1000 - obs_latency
-    wrist_camera_obs_latency: float = 0.08     # ZedMini 60 fps — placeholder
+    wrist_camera_obs_latency: float = 0.084     # ZedMini 60 fps — placeholder
     exterior_camera_obs_latency: float = 0.08  # RealSense      — placeholder
     # ── Proprioception latencies (seconds) — calibrate empirically ─────────────
     # Time from physical robot state to when the NUC's gRPC read completes.
@@ -403,7 +403,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Actions to execute before re-inferring (analogous to UMI steps_per_inference). Default: 6.")
     parser.add_argument("--robot_action_latency", default=0.20, type=float,
         help="Arm command lead time in seconds (robot_action_latency). Default: 0.20.")
-    parser.add_argument("--gripper_action_latency", default=None, type=float,
+    parser.add_argument("--gripper_action_latency", default=0.15, type=float,
         help="Gripper command lead time in seconds. Defaults to robot_action_latency.")
     parser.add_argument("--action_exec_latency", default=0.01, type=float,
         help="Minimum scheduling lead time in seconds. Default: 0.01.")
@@ -451,10 +451,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
     exec_config = ExecutionConfig(
         execution_steps=args.execution_steps,
         robot_action_latency=args.robot_action_latency,
-        gripper_action_latency=(
-            args.robot_action_latency if args.gripper_action_latency is None
-            else args.gripper_action_latency
-        ),
+        gripper_action_latency=args.gripper_action_latency,
         action_exec_latency=args.action_exec_latency,
         controller_frequency=args.controller_frequency,
         action_scale=args.action_scale,
