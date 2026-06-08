@@ -262,24 +262,34 @@ def run_rollout(
                 _diag_n_returned = len(new_actions)
                 _diag_n_is_new   = int(np.sum(is_new))
                 if np.any(is_new):
-                    new_a = new_actions[is_new][: exec_config.execution_steps]
-                    new_t = action_timestamps[is_new][: exec_config.execution_steps]
-                    _diag_n_scheduled = len(new_a)
-
-                    # Arm: integrate joint_velocity → cumulative absolute joint angles.
-                    # pi0 outputs normalized joint velocities in [-1, 1].
-                    # delta_k = clip(v_k, -1, 1) * MAX_JOINT_DELTA  (rad/step)
-                    # MAX_JOINT_DELTA = 0.2 (DROID training constant) * action_scale
-                    # pos_k   = current_joints + sum(delta_0 .. delta_k)
+                    # ── Arm: integrate joint_velocity → absolute joint angles ──────
+                    # pi0 outputs normalized joint velocities in [-1, 1]:
+                    #   delta_k = clip(v_k, -1, 1) * MAX_JOINT_DELTA  (rad/step)
+                    #   pos_k   = curr_joints + sum(delta_0 .. delta_k)
+                    # MAX_JOINT_DELTA = DROID training constant (0.2) * action_scale.
                     # Source: droid/robot_ik/robot_ik_solver.py, relative_max_joint_delta
-                    _MAX_JOINT_DELTA = 0.12  # rad per step (from DROID IK solver)
+                    _DROID_MAX_JOINT_DELTA = 0.2
+                    _MAX_JOINT_DELTA = _DROID_MAX_JOINT_DELTA * exec_config.action_scale
+
+                    # Step 1: Integrate the FULL chunk starting from the t_obs joint
+                    # state (curr_obs["joint_position"] is already interpolated to
+                    # t_obs by StateInterpolator.query_joints). Integrating all N
+                    # actions before filtering ensures stale velocities v_0..v_{K-1}
+                    # are accumulated; skipping them shifts every target position.
                     _running_joints = curr_obs["joint_position"].copy()
-                    _arm_abs: list[np.ndarray] = []
-                    for _a in new_a:
+                    _all_abs: list[np.ndarray] = []
+                    for _a in new_actions:          # full chunk, including stale actions
                         _vel = np.clip(_a[:-1], -1.0, 1.0)
                         _running_joints = _running_joints + _vel * _MAX_JOINT_DELTA
-                        _arm_abs.append(_running_joints.copy())
-                    arm_positions = np.array(_arm_abs)  # (N, 7) radians
+                        _all_abs.append(_running_joints.copy())
+                    _all_abs_arr = np.array(_all_abs)   # (N_total, 7) radians
+
+                    # Step 2: Apply is_new filter and execution_steps cap AFTER
+                    # integration so we extract the correct absolute positions.
+                    arm_positions = _all_abs_arr[is_new][: exec_config.execution_steps]  # (N_sched, 7)
+                    new_t = action_timestamps[is_new][: exec_config.execution_steps]
+                    new_a = new_actions[is_new][: exec_config.execution_steps]            # for gripper
+                    _diag_n_scheduled = len(new_t)
 
                     # Send to NUC's HighFreqController via zerorpc.
                     # Subtract robot_action_latency so the 200Hz loop calls
