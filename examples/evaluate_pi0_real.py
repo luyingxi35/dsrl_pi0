@@ -60,13 +60,13 @@ class EvalRobotConfig:
     # Each value = time from actual frame capture to when read_end is recorded.
     # Used to anchor t_obs to the true camera capture moment (UMI-style).
     # t_obs = camera_read_end_ms / 1000 - obs_latency
-    wrist_camera_obs_latency: float = 0.125     # ZedMini 60 fps — placeholder
-    exterior_camera_obs_latency: float = 0.175  # RealSense      — placeholder
+    wrist_camera_obs_latency: float = 0.08     # ZedMini 60 fps — placeholder
+    exterior_camera_obs_latency: float = 0.08  # RealSense      — placeholder
     # ── Proprioception latencies (seconds) — calibrate empirically ─────────────
     # Time from physical robot state to when the NUC's gRPC read completes.
     # Used to interpolate the 200 Hz state buffer to the camera obs timestamp.
-    proprioceptive_latency: float = 0.001  # joint positions read delay — placeholder
-    gripper_obs_latency: float = 0.020     # gripper state read delay   — placeholder
+    proprioceptive_latency: float = 0.0003  # joint positions read delay — placeholder
+    gripper_obs_latency: float = 0.00003     # gripper state read delay   — placeholder
 
     def validate(self) -> None:
         if not self.wrist_camera_id and not self.exterior_camera_id:
@@ -272,7 +272,7 @@ def run_rollout(
                     # MAX_JOINT_DELTA = 0.2 (DROID training constant) * action_scale
                     # pos_k   = current_joints + sum(delta_0 .. delta_k)
                     # Source: droid/robot_ik/robot_ik_solver.py, relative_max_joint_delta
-                    _MAX_JOINT_DELTA = 0.2 * exec_config.action_scale  # rad per step
+                    _MAX_JOINT_DELTA = 0.12  # rad per step (from DROID IK solver)
                     _running_joints = curr_obs["joint_position"].copy()
                     _arm_abs: list[np.ndarray] = []
                     for _a in new_a:
