@@ -42,6 +42,16 @@ class RobotRuntimeConfig:
     max_timesteps: int
     control_frequency_hz: int = 10
     allow_missing_cameras: bool = False
+    # ── Camera / proprioception latencies — align with EvalRobotConfig ──────────
+    wrist_camera_obs_latency:  float = 0.084     # seconds: wrist camera frame age at read_end
+    proprioceptive_latency:    float = 0.0003    # seconds: joint state gRPC read delay
+    gripper_obs_latency:       float = 0.00003   # seconds: gripper state read delay
+    # ── Action execution — align with ExecutionConfig ────────────────────────────
+    robot_action_latency:      float = 0.20      # seconds: arm command → physical response
+    gripper_action_latency:    float = 0.15      # seconds: gripper command → physical response
+    action_scale:              float = 0.5       # max_joint_delta = 0.2 * action_scale rad/step
+    controller_frequency:      float = 200.0     # Hz: HighFreqController loop rate
+    max_joint_speed_rad_s:     float = 0.1       # rad/s: NUC-side speed cap (conservative default)
 
     @property
     def camera_to_use(self) -> str:
@@ -288,8 +298,24 @@ class StateInterpolator:
 
 # ── Observation extraction ─────────────────────────────────────────────────────
 
-def extract_observation_train(robot_config: RobotRuntimeConfig, obs_dict: dict[str, Any]) -> dict[str, Any]:
+def extract_observation_train(
+    robot_config: RobotRuntimeConfig,
+    obs_dict: dict[str, Any],
+    # ── Optional UMI-style latency correction (matches extract_observation_eval) ─
+    state_history: tuple | None = None,       # (times, joints, gripper) from get_state_history()
+    wrist_obs_latency: float = 0.084,         # seconds: wrist camera frame age at read_end
+    proprioceptive_latency: float = 0.0003,   # seconds: joint state gRPC read delay
+    gripper_obs_latency: float = 0.00003,     # seconds: gripper state read delay
+) -> tuple[dict[str, Any], float]:
     """Extract and RGB-convert camera images + proprioception for training scripts.
+
+    Returns ``(obs, t_obs)`` where ``t_obs`` is the calibrated camera capture time
+    (same convention as extract_observation_eval).
+
+    When ``state_history`` is provided (from ``env._robot.get_state_history()``),
+    joint and gripper positions are interpolated from the 200 Hz ring buffer to
+    ``t_obs``, matching the eval-time observation semantics.  Without it the
+    function falls back to the direct robot_state snapshot (original behaviour).
 
     Returns a dict with left_image, right_image, wrist_image (+ _present flags),
     cartesian_position, joint_position, gripper_position.
@@ -328,7 +354,33 @@ def extract_observation_train(robot_config: RobotRuntimeConfig, obs_dict: dict[s
     if wrist_image is None:
         wrist_image = empty.copy()
 
+    # ── t_obs: anchor to wrist camera frame capture time (UMI-style) ───────────
+    # t_obs = read_end_ms / 1000 - obs_latency  (same formula as extract_observation_eval)
+    camera_timestamps = obs_dict.get("timestamp", {}).get("cameras", {})
+    t_obs_wrist: float | None = None
+    wrist_camera_id = getattr(robot_config, "wrist_camera_id", None)
+    if wrist_camera_id:
+        ts_ms = _find_camera_ts_ms(camera_timestamps, wrist_camera_id)
+        if ts_ms is not None:
+            t_obs_wrist = ts_ms / 1000.0 - wrist_obs_latency
+    t_obs: float = t_obs_wrist if t_obs_wrist is not None else (time.time() - wrist_obs_latency)
+
+    # ── Robot state: interpolate to t_obs from high-freq history when available ─
     robot_state = obs_dict["robot_state"]
+    joint_position   = np.array(robot_state["joint_positions"])
+    gripper_position = np.array([robot_state["gripper_position"]])
+
+    if state_history is not None:
+        times_h, joints_h, gripper_h = state_history
+        if len(times_h) >= 2:
+            interp = StateInterpolator(times_h, joints_h, gripper_h)
+            j = interp.query_joints(t_obs, proprioceptive_latency)
+            g = interp.query_gripper(t_obs, gripper_obs_latency)
+            if j is not None:
+                joint_position = j
+            if g is not None and float(g) >= 0.0:   # -1 sentinel = no data
+                gripper_position = np.array([float(g)])
+
     return {
         "left_image": left_image,
         "right_image": right_image,
@@ -337,9 +389,9 @@ def extract_observation_train(robot_config: RobotRuntimeConfig, obs_dict: dict[s
         "right_image_present": right_image_present,
         "wrist_image_present": wrist_image_present,
         "cartesian_position": np.array(robot_state["cartesian_position"]),
-        "joint_position": np.array(robot_state["joint_positions"]),
-        "gripper_position": np.array([robot_state["gripper_position"]]),
-    }
+        "joint_position": joint_position,
+        "gripper_position": gripper_position,
+    }, t_obs
 
 
 def extract_observation_eval(
