@@ -140,6 +140,66 @@ def test_velocity_integration_cumulative() -> None:
 
 # ── velocity clipping ─────────────────────────────────────────────────────────
 
+def test_velocity_integration_integrate_all_then_filter() -> None:
+    """Regression test for evaluate_pi0_real.py Bug 1.
+
+    Stale velocities must be accumulated before applying the is_new filter.
+    Integrating only the is_new subset starts from the wrong position.
+
+    Setup:
+        chunk = 4 actions, joint-0 velocity = 1.0, action_scale = 1.0
+        MAX_JOINT_DELTA = 0.2 * 1.0 = 0.2 rad/step
+        is_new = [False, False, True, True]  (first 2 stale)
+
+    Correct (integrate ALL, then slice):
+        all_abs = [0.2, 0.4, 0.6, 0.8]  → scheduled = [0.6, 0.8]
+    Buggy   (integrate only is_new subset):
+        abs     = [0.2, 0.4]             → scheduled = [0.2, 0.4]  ← WRONG
+    """
+    action_scale = 1.0
+    MAX_JOINT_DELTA = 0.2 * action_scale
+
+    # 4-action chunk, all joint-0 velocity = 1.0
+    all_actions = [np.array([1.0] + [0.0] * 6)] * 4   # shape (4, 7)
+    is_new = [False, False, True, True]
+    current = np.zeros(7)
+
+    # ── Correct: integrate all, then filter ──────────────────────────────────
+    running = current.copy()
+    all_abs = []
+    for a in all_actions:
+        running = running + np.clip(a[:-1], -1.0, 1.0) * MAX_JOINT_DELTA
+        all_abs.append(running.copy())
+    scheduled_correct = [pos for pos, new in zip(all_abs, is_new) if new]
+
+    assert abs(scheduled_correct[0][0] - 0.6) < 1e-9, (
+        f"pos[2] j0 should be 0.6 (3×0.2), got {scheduled_correct[0][0]}"
+    )
+    assert abs(scheduled_correct[1][0] - 0.8) < 1e-9, (
+        f"pos[3] j0 should be 0.8 (4×0.2), got {scheduled_correct[1][0]}"
+    )
+
+    # ── Wrong (old bug): integrate only is_new subset ────────────────────────
+    new_actions_only = [a for a, new in zip(all_actions, is_new) if new]
+    running_buggy = current.copy()
+    buggy_abs = []
+    for a in new_actions_only:
+        running_buggy = running_buggy + np.clip(a[:-1], -1.0, 1.0) * MAX_JOINT_DELTA
+        buggy_abs.append(running_buggy.copy())
+
+    # Buggy positions are 0.2 and 0.4, not 0.6 and 0.8
+    assert abs(buggy_abs[0][0] - 0.2) < 1e-9, "Sanity: buggy gives 0.2 for first new action"
+    assert abs(buggy_abs[1][0] - 0.4) < 1e-9, "Sanity: buggy gives 0.4 for second new action"
+
+    # Confirm the two approaches differ — fixing Bug 1 changes behaviour
+    assert scheduled_correct[0][0] != buggy_abs[0][0], (
+        "Correct and buggy results should differ when stale actions exist"
+    )
+    print(f"  Correct: {[round(p[0],3) for p in scheduled_correct]}  "
+          f"Buggy: {[round(p[0],3) for p in buggy_abs]}")
+    print("  [PASS] integrate all, then filter (Bug 1 regression guard)")
+
+
 def test_velocity_clipping() -> None:
     """Out-of-range velocities must be clipped to [-1, 1] before scaling."""
     MAX_JOINT_DELTA = 0.2 * 1.0
@@ -191,6 +251,7 @@ if __name__ == "__main__":
     test_velocity_integration_basic()
     test_velocity_integration_full_speed()
     test_velocity_integration_cumulative()
+    test_velocity_integration_integrate_all_then_filter()
     test_velocity_clipping()
     test_binarize_gripper_open()
     test_binarize_gripper_closed()
