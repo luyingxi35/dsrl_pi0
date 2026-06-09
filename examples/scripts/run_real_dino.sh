@@ -1,4 +1,20 @@
 #!/bin/bash
+#
+# Usage:
+#   bash examples/scripts/run_real_dino.sh                       # fresh run
+#   bash examples/scripts/run_real_dino.sh --resume_from <dir>   # resume from outputdir
+
+# ── Parse CLI arguments ───────────────────────────────────────────────────────
+RESUME_FROM=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --resume_from)
+            RESUME_FROM="$2"; shift 2 ;;
+        *)
+            echo "Unknown argument: $1" >&2; exit 1 ;;
+    esac
+done
+
 proj_name=DSRL_pi0_FrankaDroid
 device_id=0
 
@@ -36,6 +52,12 @@ ACTION_SCALE="0.5"
 MAX_JOINT_SPEED="0.5"
 
 
+# Build resume flag (empty string when not resuming).
+RESUME_ARG=""
+if [[ -n "${RESUME_FROM}" ]]; then
+    RESUME_ARG="--resume_from ${RESUME_FROM}"
+fi
+
 python3 examples/launch_train_real_dino.py \
 --resume_from /home/robot/yingxi/dsrl_pi0/logs/DSRL_pi0_FrankaDroid/dsrl_pi0_real_dino_2026_06_09_17_06_08_0000--s-0 \
 --algorithm state_sac \
@@ -72,4 +94,5 @@ python3 examples/launch_train_real_dino.py \
 --policy_host "${POLICY_HOST}" \
 --policy_port "${POLICY_PORT}" \
 --action_scale "${ACTION_SCALE}" \
---max_joint_speed_rad_s "${MAX_JOINT_SPEED}"
+--max_joint_speed_rad_s "${MAX_JOINT_SPEED}" \
+${RESUME_ARG}
