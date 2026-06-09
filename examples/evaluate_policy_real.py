@@ -427,8 +427,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--policy_host", default="127.0.0.1")
     parser.add_argument("--policy_port", default=8000, type=int)
     # ── StateSAC model ────────────────────────────────────────────────────────
-    parser.add_argument("--rl_noise_horizon", default=32, type=int,
-        help="RL noise horizon (must match the trained checkpoint). Default: 32.")
+    parser.add_argument("--rl_noise_horizon", default=8, type=int,
+        help="RL noise horizon (must match the trained checkpoint). Default: 8.")
     parser.add_argument("--network_type", default="transformer",
         choices=("transformer", "mlp"),
         help="StateSAC network type (must match the trained checkpoint). Default: transformer.")

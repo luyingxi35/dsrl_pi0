@@ -19,7 +19,7 @@ if __name__ == '__main__':
     parser.add_argument('--max_steps', default=int(1e6), help='Number of training steps.', type=int)
     parser.add_argument('--add_states', default=1, help='whether to add low-dim states to the obervations', type=int)
     parser.add_argument('--wandb_project', default='cql_sim_online', help='wandb project')
-    parser.add_argument('--num_initial_traj_collect', default=1, help='number of trajectories to collect before starting online updates', type=int)
+    parser.add_argument('--num_initial_traj_collect', default=5, help='number of trajectories to collect before starting online updates', type=int)
     parser.add_argument('--algorithm', default='state_sac', help='type of algorithm')
     parser.add_argument('--prefix', default='', help='prefix to use for wandb')
     parser.add_argument('--suffix', default='', help='suffix to use for wandb')
