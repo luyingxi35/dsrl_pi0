@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import time
@@ -29,17 +30,19 @@ EMPTY_IMAGE_SHAPE = (224, 224, 3)
 
 
 def trajwise_alternating_training_loop(variant, agent, env, eval_env, online_replay_buffer, replay_buffer, wandb_logger,
-                                       shard_fn=None, policy_service=None, robot_io=None, obs_builder=None):
+                                       shard_fn=None, policy_service=None, robot_io=None, obs_builder=None,
+                                       initial_step=0, initial_total_env_steps=0, initial_total_num_traj=0,
+                                       initial_completed=0, initial_successes=0):
     replay_buffer_iterator = replay_buffer.get_iterator(variant.batch_size)
     if shard_fn is not None:
         replay_buffer_iterator = map(shard_fn, replay_buffer_iterator)
-        
-    i = 0
-    total_env_steps = 0
-    total_num_traj = 0
-    wandb_logger.log({'num_online_samples': 0}, step=i)
-    wandb_logger.log({'num_online_trajs': 0}, step=i)
-    wandb_logger.log({'env_steps': 0}, step=i)
+
+    i = initial_step
+    total_env_steps = initial_total_env_steps
+    total_num_traj = initial_total_num_traj
+    wandb_logger.log({'num_online_samples': len(online_replay_buffer)}, step=i)
+    wandb_logger.log({'num_online_trajs': total_num_traj}, step=i)
+    wandb_logger.log({'env_steps': total_env_steps}, step=i)
 
     try:
         ui = HumanEvalUI(
@@ -52,10 +55,10 @@ def trajwise_alternating_training_loop(variant, agent, env, eval_env, online_rep
     except Exception as exc:
         raise RuntimeError("Failed to initialize real training GUI. Check DISPLAY and Tkinter availability.") from exc
 
-    completed = 0
-    successes = 0
+    completed = initial_completed
+    successes = initial_successes
     try:
-        with tqdm(total=variant.max_steps, initial=0) as pbar:
+        with tqdm(total=variant.max_steps, initial=i) as pbar:
             while i <= variant.max_steps:
                 if not ui.wait_for_start(total_num_traj, completed, successes):
                     print("Training stopped before starting the next trajectory.")
@@ -124,6 +127,19 @@ def trajwise_alternating_training_loop(variant, agent, env, eval_env, online_rep
                         if variant.checkpoint_interval != -1:
                             if i % variant.checkpoint_interval == 0:
                                 agent.save_checkpoint(variant.outputdir, i, variant.checkpoint_interval)
+                                # Save training counters so resume can restore them.
+                                state_path = os.path.join(variant.outputdir, 'training_state.json')
+                                with open(state_path, 'w') as _f:
+                                    json.dump({
+                                        'i':               i,
+                                        'total_env_steps': total_env_steps,
+                                        'total_num_traj':  total_num_traj,
+                                        'completed':       completed,
+                                        'successes':       successes,
+                                    }, _f)
+                                # Save replay buffer (overwrite; always keep the latest).
+                                buf_path = os.path.join(variant.outputdir, 'replay_buffer.pkl')
+                                online_replay_buffer.save(buf_path)
     finally:
         ui.close()
             
@@ -188,6 +204,23 @@ def collect_traj(variant, agent, env, i, policy_service=None, wandb_logger=None,
         env._robot.start_trajectory_controller(
             float(getattr(runtime_config, "controller_frequency", 200.0))
         )
+        # ── Pre-populate interpolator with a hold-in-place trajectory ──────────
+        # Without this, the JointTrajectoryInterpolator is empty on the first
+        # add_waypoints call.  When the interpolator is empty, update_waypoints()
+        # skips the continuity-bridge logic (curr_pos is None), so a batch of
+        # all-stale waypoints is written directly.  The 200 Hz loop then
+        # immediately clamps to positions[-1] (the fully-accumulated final target)
+        # in a single 5 ms tick → violent first step.
+        # Sending a hold trajectory ensures curr_pos is always available, so the
+        # bridge fires and the robot transitions smoothly.
+        _hold_joints  = np.tile(_init_joints, (4, 1))       # (4, 7)
+        _hold_offsets = [0.05, 0.20, 0.50, 1.00]            # seconds, all positive
+        _hold_speed   = float(getattr(runtime_config, "max_joint_speed_rad_s", 0.5))
+        env._robot.add_waypoints(
+            _hold_offsets, _hold_joints.tolist(),
+            max_joint_speed_rad_s=_hold_speed,
+        )
+        time.sleep(0.05)  # let NUC receive and process the hold batch
     except Exception:
         import traceback
         traceback.print_exc()
@@ -281,17 +314,36 @@ def collect_traj(variant, agent, env, i, policy_service=None, wandb_logger=None,
                 abs_positions_arr = np.array(abs_positions)   # (query_frequency, 7)
 
                 arm_target_times = t_obs + np.arange(1, query_frequency + 1) * dt_step
-                arm_offsets      = (arm_target_times - _robot_action_latency) - time.time()
-                try:
-                    env._robot.add_waypoints(
-                        arm_offsets.tolist(),
-                        abs_positions_arr.tolist(),
-                        max_joint_speed_rad_s=_max_joint_speed_rad_s,
-                    )
-                except Exception:
-                    import traceback
-                    traceback.print_exc()
-                    import pdb; pdb.set_trace()
+
+                # ── is_new filter (mirrors evaluate_pi0_real.py) ─────────────
+                # Because pi0 inference is synchronous here (~200–400 ms), t_obs
+                # is already far in the past by the time we reach this point.
+                # Without filtering, ALL waypoints have negative time offsets and
+                # the HighFreqController's JointTrajectoryInterpolator clamps to
+                # positions[-1] in a single 5 ms tick → violent first step.
+                # We integrate the full chunk first (so cumulative positions are
+                # correct), then discard waypoints whose wall-clock target has
+                # already passed before scheduling them on the controller.
+                _action_exec_latency = float(
+                    getattr(runtime_config, "action_exec_latency", 0.0)
+                )
+                _is_new = arm_target_times > (time.time() + _action_exec_latency)
+                if np.any(_is_new):
+                    arm_offsets = (
+                        arm_target_times[_is_new] - _robot_action_latency
+                    ) - time.time()
+                    try:
+                        env._robot.add_waypoints(
+                            arm_offsets.tolist(),
+                            abs_positions_arr[_is_new].tolist(),
+                            max_joint_speed_rad_s=_max_joint_speed_rad_s,
+                        )
+                    except Exception:
+                        import traceback
+                        traceback.print_exc()
+                        import pdb; pdb.set_trace()
+                # If all stale: hold-in-place trajectory (sent at episode start)
+                # keeps the robot stationary until a fresh chunk arrives.
 
                 # ── Gripper: schedule timestamped commands ────────────────────
                 scheduled_gripper_actions = [
