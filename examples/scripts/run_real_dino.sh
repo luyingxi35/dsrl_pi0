@@ -52,6 +52,12 @@ ACTION_SCALE="0.5"
 MAX_JOINT_SPEED="0.1"
 
 
+# Build resume flag (empty string when not resuming).
+RESUME_ARG=""
+if [[ -n "${RESUME_FROM}" ]]; then
+    RESUME_ARG="--resume_from ${RESUME_FROM}"
+fi
+
 python3 examples/launch_train_real_dino.py \
 --algorithm state_sac \
 --env franka_droid \
@@ -87,4 +93,5 @@ python3 examples/launch_train_real_dino.py \
 --policy_host "${POLICY_HOST}" \
 --policy_port "${POLICY_PORT}" \
 --action_scale "${ACTION_SCALE}" \
---max_joint_speed_rad_s "${MAX_JOINT_SPEED}"
+--max_joint_speed_rad_s "${MAX_JOINT_SPEED}" \
+${RESUME_ARG}
