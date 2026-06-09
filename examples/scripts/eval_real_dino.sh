@@ -18,4 +18,5 @@ python3 examples/evaluate_policy_real.py \
 --network_type transformer \
 --rl_noise_horizon 8 \
 --action_scale 0.5 \
---max_joint_speed_rad_s 0.5
+--max_joint_speed_rad_s 0.5 \
+--diagnostic_dir ./logs/diagnostics
