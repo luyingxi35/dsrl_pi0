@@ -196,7 +196,7 @@ def collect_traj(variant, agent, env, i, policy_service=None, wandb_logger=None,
     scheduled_gripper_actions: list[tuple[float, float]] = []
     _robot_action_latency   = float(getattr(runtime_config, "robot_action_latency",   0.20))
     _gripper_action_latency = float(getattr(runtime_config, "gripper_action_latency", 0.15))
-    _max_joint_speed_rad_s  = float(getattr(runtime_config, "max_joint_speed_rad_s",  0.1))
+    _max_joint_speed_rad_s  = float(getattr(runtime_config, "max_joint_speed_rad_s",  0.5))
     _action_scale           = float(getattr(runtime_config, "action_scale", 0.5))
     _MAX_JOINT_DELTA        = 0.2 * _action_scale
     _wrist_obs_latency      = float(getattr(runtime_config, "wrist_camera_obs_latency", 0.084))
