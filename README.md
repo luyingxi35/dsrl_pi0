@@ -89,11 +89,13 @@ cd openpi && python scripts/serve_policy.py --env=DROID
 
 3. [On the robot laptop/workstation] Fill in camera IDs and remote policy host/port in `examples/scripts/run_real.sh`, then run DSRL:
 ```
+export HF_ENDPOINT=https://hf-mirror.com
 bash examples/scripts/run_real.sh
 ```
 
 For the Wrist-DINO state-only real-world variant, fill in the camera IDs and remote policy host/port in `examples/scripts/run_real_dino.sh`, then run:
 ```
+export HF_ENDPOINT=https://hf-mirror.com
 bash examples/scripts/run_real_dino.sh
 ```
 This variant uses only the wrist camera for the RL steering policy image feature, featurized by `facebook/dinov2-small` into a 384-D CLS embedding. The full RL state is 2440-D: 7 joint positions, 1 gripper position, 2048-D pi0 VLM embedding, and 384-D DINO feature. The pi0 policy request still keeps its expected DROID inputs. The first run may download/cache the DINO-v2-small model through HuggingFace Transformers.
