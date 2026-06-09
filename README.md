@@ -103,8 +103,8 @@ This variant uses only the wrist camera for the RL steering policy image feature
 #### Resuming a Wrist-DINO training run
 
 Every `--checkpoint_interval` gradient steps (default 10 000) the training loop automatically saves three files to `outputdir`:
-- `checkpoint_<step>` — Flax agent checkpoint (actor / critic / temp)
-- `training_state.json` — gradient-step counter, episode counts, success counts
+- `checkpoint_<step>` — Flax agent checkpoint (actor / critic / temp params+optimizer state / `_rng`)
+- `training_state.json` — gradient-step counter, episode counts, success counts, temperature scalar
 - `replay_buffer.pkl` — full replay buffer snapshot
 
 To resume from the latest checkpoint, pass `--resume_from <outputdir>` in place of the normal run:

@@ -136,6 +136,8 @@ def trajwise_alternating_training_loop(variant, agent, env, eval_env, online_rep
                                         'total_num_traj':  total_num_traj,
                                         'completed':       completed,
                                         'successes':       successes,
+                                        'temperature':     float(agent._temp.apply_fn(
+                                                               {'params': agent._temp.params})),
                                     }, _f)
                                 # Save replay buffer (overwrite; always keep the latest).
                                 buf_path = os.path.join(variant.outputdir, 'replay_buffer.pkl')
