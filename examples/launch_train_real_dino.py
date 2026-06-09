@@ -27,6 +27,11 @@ if __name__ == '__main__':
     parser.add_argument('--query_freq', default=-1, help='query frequency', type=int)
     parser.add_argument('--instruction', default='pick up the blue peg', help='language instruction for the robot')
     parser.add_argument('--restore_path', default='', help='optional checkpoint path to restore before real-world training')
+    parser.add_argument('--resume_from', default='',
+        help='Path to a previous outputdir to resume training from. Reuses that '
+             'directory, auto-detects the latest agent checkpoint, '
+             'training_state.json and replay_buffer.pkl. '
+             'Mutually exclusive with --restore_path.')
     parser.add_argument('--policy_host', default='127.0.0.1', help='OpenPI policy server host')
     parser.add_argument('--policy_port', default=8000, help='OpenPI policy server port', type=int)
     parser.add_argument('--external_camera', default='right', choices=['left', 'right'], help='external camera feed to use for pi0 policy inputs')

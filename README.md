@@ -100,6 +100,35 @@ bash examples/scripts/run_real_dino.sh
 ```
 This variant uses only the wrist camera for the RL steering policy image feature, featurized by `facebook/dinov2-small` into a 384-D CLS embedding. The full RL state is 2440-D: 7 joint positions, 1 gripper position, 2048-D pi0 VLM embedding, and 384-D DINO feature. The pi0 policy request still keeps its expected DROID inputs. The first run may download/cache the DINO-v2-small model through HuggingFace Transformers.
 
+#### Resuming a Wrist-DINO training run
+
+Every `--checkpoint_interval` gradient steps (default 10 000) the training loop automatically saves three files to `outputdir`:
+- `checkpoint_<step>` — Flax agent checkpoint (actor / critic / temp)
+- `training_state.json` — gradient-step counter, episode counts, success counts
+- `replay_buffer.pkl` — full replay buffer snapshot
+
+To resume from the latest checkpoint, pass `--resume_from <outputdir>` in place of the normal run:
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+python3 examples/launch_train_real_dino.py \
+  --resume_from $EXP/DSRL_pi0_FrankaDroid/<your_run_name> \
+  --algorithm state_sac \
+  --env franka_droid \
+  --prefix dsrl_pi0_real_dino \
+  --wandb_project DSRL_pi0_FrankaDroid \
+  --batch_size 256 \
+  --max_steps 500000 \
+  --multi_grad_step 30 \
+  --query_freq 8 \
+  --rl_noise_horizon 8 \
+  --network_type transformer \
+  --instruction 'pick up the blue peg' \
+  --wrist_camera_id "<WRIST_CAM_ID>" \
+  --policy_host "<GPU_SERVER_IP>" \
+  --policy_port 8000
+```
+`--resume_from` reuses the existing output directory, restores the agent weights from the latest checkpoint, reloads the training counters, and refills the replay buffer. It is mutually exclusive with `--restore_path`.
+
 ### Action Execution Parameters
 
 The training loop uses a HighFreqController (200 Hz, on the NUC) for smooth joint trajectory execution, matching the eval-time setup. Two key parameters control arm speed:

@@ -1,4 +1,5 @@
 #! /usr/bin/env python
+import json
 import logging
 import os
 import sys
@@ -229,6 +230,9 @@ def main(variant):
 
     agent = StateSACLearner(variant.seed, sample_obs, sample_action, **kwargs)
 
+    # ── Checkpoint restore (simple path) ─────────────────────────────────────
+    if variant.restore_path and variant.resume_from:
+        raise ValueError("--restore_path and --resume_from are mutually exclusive.")
     if variant.restore_path:
         logging.info('restoring from %s', variant.restore_path)
         agent.restore_checkpoint(variant.restore_path)
@@ -237,6 +241,57 @@ def main(variant):
     online_replay_buffer = ReplayBuffer(dummy_env.observation_space, dummy_env.action_space, int(online_buffer_size))
     replay_buffer = online_replay_buffer
     replay_buffer.seed(variant.seed)
+
+    # ── Resume from a previous outputdir ─────────────────────────────────────
+    initial_step = 0
+    initial_total_env_steps = 0
+    initial_total_num_traj = 0
+    initial_completed = 0
+    initial_successes = 0
+
+    if variant.resume_from:
+        from flax.training import checkpoints as flax_ckpts
+        resume_dir = variant.resume_from
+        if not os.path.isdir(resume_dir):
+            raise ValueError(f"--resume_from directory does not exist: {resume_dir}")
+
+        # Re-point outputdir to the existing experiment directory.
+        outputdir = resume_dir
+        variant.outputdir = outputdir
+        logging.info('Resuming into existing outputdir: %s', outputdir)
+
+        # 1. Restore agent from the latest Flax checkpoint.
+        latest = flax_ckpts.latest_checkpoint(outputdir, prefix='checkpoint')
+        if latest is None:
+            raise RuntimeError(f"No checkpoint found in {outputdir}. "
+                               "Use --restore_path for a one-off weight restore.")
+        agent.restore_checkpoint(outputdir)
+        initial_step = int(os.path.basename(latest).split('checkpoint_')[-1])
+        logging.info('Restored agent from step %d (%s)', initial_step, latest)
+
+        # 2. Restore training counters from training_state.json.
+        state_path = os.path.join(outputdir, 'training_state.json')
+        if os.path.exists(state_path):
+            with open(state_path) as f:
+                saved_state = json.load(f)
+            initial_step            = saved_state.get('i',                initial_step)
+            initial_total_env_steps = saved_state.get('total_env_steps',  0)
+            initial_total_num_traj  = saved_state.get('total_num_traj',   0)
+            initial_completed       = saved_state.get('completed',        0)
+            initial_successes       = saved_state.get('successes',        0)
+            logging.info('Restored training state: %s', saved_state)
+        else:
+            logging.warning('training_state.json not found in %s; counters start at 0.', outputdir)
+
+        # 3. Restore replay buffer (optional — proceed if missing).
+        buf_path = os.path.join(outputdir, 'replay_buffer.pkl')
+        if os.path.exists(buf_path):
+            online_replay_buffer.restore(buf_path)
+            logging.info('Restored replay buffer (%d transitions) from %s',
+                         len(online_replay_buffer), buf_path)
+        else:
+            logging.warning('replay_buffer.pkl not found in %s; starting with empty buffer.', outputdir)
+
     trajwise_alternating_training_loop(
         variant,
         agent,
@@ -249,4 +304,9 @@ def main(variant):
         policy_service=policy_service,
         robot_io=robot_io,
         obs_builder=obs_builder,
+        initial_step=initial_step,
+        initial_total_env_steps=initial_total_env_steps,
+        initial_total_num_traj=initial_total_num_traj,
+        initial_completed=initial_completed,
+        initial_successes=initial_successes,
     )
