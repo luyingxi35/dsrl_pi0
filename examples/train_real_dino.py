@@ -266,7 +266,7 @@ def main(variant):
             raise RuntimeError(f"No checkpoint found in {outputdir}. "
                                "Use --restore_path for a one-off weight restore.")
         agent.restore_checkpoint(outputdir)
-        initial_step = int(os.path.basename(latest).split('checkpoint_')[-1])
+        initial_step = int(os.path.basename(latest).split('checkpoint')[-1])
         logging.info('Restored agent from step %d (%s)', initial_step, latest)
 
         # 2. Restore training counters from training_state.json.
