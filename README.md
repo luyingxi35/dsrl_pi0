@@ -98,6 +98,19 @@ bash examples/scripts/run_real_dino.sh
 ```
 This variant uses only the wrist camera for the RL steering policy image feature, featurized by `facebook/dinov2-small` into a 384-D CLS embedding. The full RL state is 2440-D: 7 joint positions, 1 gripper position, 2048-D pi0 VLM embedding, and 384-D DINO feature. The pi0 policy request still keeps its expected DROID inputs. The first run may download/cache the DINO-v2-small model through HuggingFace Transformers.
 
+### Action Execution Parameters
+
+The training loop uses a HighFreqController (200 Hz, on the NUC) for smooth joint trajectory execution, matching the eval-time setup. Two key parameters control arm speed:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--action_scale` | `0.5` | Speed multiplier on DROID's training max joint delta (0.2 rad/step). `1.0` = full training speed, `0.5` = half speed (safer default). |
+| `--max_joint_speed_rad_s` | `0.5` | NUC-side per-joint speed cap (rad/s). Conservative default; increase to `1.5` or higher for faster execution. |
+
+**Recommended starting point**: `--action_scale 0.5 --max_joint_speed_rad_s 1.5` allows arm motion up to 1.0 rad/step at 10 Hz without the NUC cap triggering.
+
+The default `--max_joint_speed_rad_s 0.5` is intentionally conservative for initial safety validation. At `action_scale=0.5` the arm moves up to 0.5 rad/step; the NUC cap at 0.5 rad/s will extend execution time by ~10× unless raised.
+
 ## Real Policy Evaluation
 After training, evaluate real-world policies with the same three-machine runtime.
 
@@ -154,6 +167,7 @@ python3 examples/evaluate_pi0_real.py \
 --max_duration_s 60 \
 --execution_steps 8 \
 --action_scale 0.5 \
+--chunk_transition_time 0.2 \
 --control_frequency_hz 10 \
 --controller_frequency 200 \
 --use_wrist_camera 1 \
