@@ -25,7 +25,7 @@ if __name__ == '__main__':
     parser.add_argument('--suffix', default='', help='suffix to use for wandb')
     parser.add_argument('--multi_grad_step', default=1, help='Number of graident steps to take per environment step, aka UTD', type=int)
     parser.add_argument('--query_freq', default=-1, help='query frequency', type=int)
-    parser.add_argument('--instruction', default='pick the blue peg', help='language instruction for the robot')
+    parser.add_argument('--instruction', default='pick up the blue peg', help='language instruction for the robot')
     parser.add_argument('--restore_path', default='', help='optional checkpoint path to restore before real-world training')
     parser.add_argument('--policy_host', default='127.0.0.1', help='OpenPI policy server host')
     parser.add_argument('--policy_port', default=8000, help='OpenPI policy server port', type=int)
@@ -41,7 +41,7 @@ if __name__ == '__main__':
     parser.add_argument('--action_scale', default=0.5, type=float,
         help='Scale on DROID training max_joint_delta (0.2 rad/step). '
              '1.0 = full speed, 0.5 = half speed (safer default). Default: 0.5.')
-    parser.add_argument('--max_joint_speed_rad_s', default=0.1, type=float,
+    parser.add_argument('--max_joint_speed_rad_s', default=0.5, type=float,
         help='NUC-side per-joint speed cap (rad/s) forwarded to HighFreqController. '
              'Default 0.1 is conservative. Increase (e.g. 1.5) for faster execution. Default: 0.1.')
     parser.add_argument('--robot_action_latency', default=0.20, type=float,
