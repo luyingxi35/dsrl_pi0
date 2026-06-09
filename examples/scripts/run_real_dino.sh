@@ -1,4 +1,20 @@
 #!/bin/bash
+#
+# Usage:
+#   bash examples/scripts/run_real_dino.sh                       # fresh run
+#   bash examples/scripts/run_real_dino.sh --resume_from <dir>   # resume from outputdir
+
+# ── Parse CLI arguments ───────────────────────────────────────────────────────
+RESUME_FROM=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --resume_from)
+            RESUME_FROM="$2"; shift 2 ;;
+        *)
+            echo "Unknown argument: $1" >&2; exit 1 ;;
+    esac
+done
+
 proj_name=DSRL_pi0_FrankaDroid
 device_id=0
 

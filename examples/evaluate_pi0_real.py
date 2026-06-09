@@ -163,6 +163,17 @@ def run_rollout(
     # env._robot is ServerInterface → this call goes over zerorpc to NUC:4242.
     env._robot.start_trajectory_controller(exec_config.controller_frequency)
 
+    # ── Pre-populate interpolator with a hold-in-place trajectory ─────────────
+    # Without this, JointTrajectoryInterpolator is empty on the first
+    # add_waypoints call.  update_waypoints() skips the continuity-bridge when
+    # curr_pos is None (empty interpolator), so the 200 Hz loop clamps to
+    # positions[-1] in one 5 ms tick → violent first step.
+    # A hold trajectory ensures curr_pos is always available so the bridge fires.
+    _hold_joints  = np.tile(current_joints, (4, 1))   # (4, 7)
+    _hold_offsets = [0.05, 0.20, 0.50, 1.00]          # positive offsets (seconds)
+    env._robot.add_waypoints(_hold_offsets, _hold_joints.tolist())
+    time.sleep(0.05)  # let NUC receive and process the hold batch
+
     # ── Inference concurrency ──────────────────────────────────────────────────
     # Gripper and obs calls use zerorpc/gevent → must stay on main thread.
     # policy_service.infer() uses openpi websocket (not gevent) → safe in thread.
