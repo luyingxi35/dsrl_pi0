@@ -208,6 +208,10 @@ def main(variant):
         max_timesteps=variant.max_rollout_steps,
         control_frequency_hz=variant.control_frequency_hz,
         allow_missing_cameras=True,
+        action_scale=variant.action_scale,
+        max_joint_speed_rad_s=variant.max_joint_speed_rad_s,
+        robot_action_latency=variant.robot_action_latency,
+        controller_frequency=variant.controller_frequency,
     )
     runtime_config.validate()
     logging.info("Initializing DROID client runtime...")

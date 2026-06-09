@@ -27,6 +27,14 @@ WRIST_CAMERA_ID="17396664"
 POLICY_HOST="127.0.0.1"
 POLICY_PORT="8000"
 
+# Action execution parameters (aligned with evaluate_pi0_real.py).
+# action_scale: speed of arm motion. 0.5 = half of DROID training speed (safe default).
+# max_joint_speed_rad_s: NUC-side safety cap. 0.1 is very conservative; increase to
+#   1.5 for normal training speed. Match action_scale: e.g. action_scale=0.5 with
+#   max_joint_speed_rad_s=1.5 allows up to 1.0 rad/step at 10 Hz without capping.
+ACTION_SCALE="0.5"
+MAX_JOINT_SPEED="0.1"
+
 
 python3 examples/launch_train_real_dino.py \
 --algorithm state_sac \
@@ -61,4 +69,6 @@ python3 examples/launch_train_real_dino.py \
 --right_camera_id "${RIGHT_CAMERA_ID}" \
 --wrist_camera_id "${WRIST_CAMERA_ID}" \
 --policy_host "${POLICY_HOST}" \
---policy_port "${POLICY_PORT}"
+--policy_port "${POLICY_PORT}" \
+--action_scale "${ACTION_SCALE}" \
+--max_joint_speed_rad_s "${MAX_JOINT_SPEED}"
