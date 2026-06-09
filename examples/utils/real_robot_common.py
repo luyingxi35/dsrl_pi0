@@ -51,7 +51,7 @@ class RobotRuntimeConfig:
     gripper_action_latency:    float = 0.15      # seconds: gripper command → physical response
     action_scale:              float = 0.5       # max_joint_delta = 0.2 * action_scale rad/step
     controller_frequency:      float = 200.0     # Hz: HighFreqController loop rate
-    max_joint_speed_rad_s:     float = 0.1       # rad/s: NUC-side speed cap (conservative default)
+    max_joint_speed_rad_s:     float = 0.5      # rad/s: NUC-side speed cap (conservative default)
 
     @property
     def camera_to_use(self) -> str:
@@ -424,7 +424,7 @@ def extract_observation_eval(
     snapshot when no history is available or interpolation fails.
 
     Latency parameters (all in seconds; calibrate empirically):
-        wrist_obs_latency:      ZedMini  — placeholder 0.125 s
+        _obs_latency:      ZedMini  — placeholder 0.125 s
         exterior_obs_latency:   RealSense — placeholder 0.175 s
         proprioceptive_latency: joint read delay — placeholder 0.001 s
         gripper_latency:        gripper read delay — placeholder 0.020 s
