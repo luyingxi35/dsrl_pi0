@@ -49,7 +49,7 @@ python3 examples/launch_train_real_dino.py \
 --log_interval 100 \
 --multi_grad_step 30 \
 --action_magnitude 2.0 \
---instruction 'pick the blue peg' \
+--instruction 'pick up the blue peg' \
 --query_freq 8 \
 --rl_noise_horizon 8 \
 --hidden_dims 1024 \
