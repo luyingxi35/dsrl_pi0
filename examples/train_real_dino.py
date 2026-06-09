@@ -280,6 +280,19 @@ def main(variant):
             initial_completed       = saved_state.get('completed',        0)
             initial_successes       = saved_state.get('successes',        0)
             logging.info('Restored training state: %s', saved_state)
+            # Verify temperature was correctly restored from the Flax checkpoint.
+            saved_temp = saved_state.get('temperature')
+            if saved_temp is not None:
+                restored_temp = float(agent._temp.apply_fn({'params': agent._temp.params}))
+                if abs(restored_temp - saved_temp) > 0.01:
+                    logging.warning(
+                        'Temperature mismatch after checkpoint restore: '
+                        'restored=%.4f, saved=%.4f. '
+                        'Flax checkpoint may not have restored _temp correctly.',
+                        restored_temp, saved_temp,
+                    )
+                else:
+                    logging.info('Temperature restored correctly: %.4f', restored_temp)
         else:
             logging.warning('training_state.json not found in %s; counters start at 0.', outputdir)
 
