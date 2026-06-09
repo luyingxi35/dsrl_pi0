@@ -106,7 +106,7 @@ class WandBLogger(object):
                 id=experiment_id,
                 settings=wandb.Settings(start_method="thread"),
                 group=group_name,
-                entity=team
+                entity=team,
             )
             self.output_dir = output_dir
 

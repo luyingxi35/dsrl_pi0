@@ -51,7 +51,7 @@ class RobotRuntimeConfig:
     gripper_action_latency:    float = 0.15      # seconds: gripper command → physical response
     action_scale:              float = 0.5       # max_joint_delta = 0.2 * action_scale rad/step
     controller_frequency:      float = 200.0     # Hz: HighFreqController loop rate
-    max_joint_speed_rad_s:     float = 0.5      # rad/s: NUC-side speed cap (conservative default)
+    max_joint_speed_rad_s:     float = 0.5       # rad/s: NUC-side speed cap (conservative default)
 
     @property
     def camera_to_use(self) -> str:
