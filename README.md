@@ -96,10 +96,11 @@ bash examples/scripts/run_real.sh
 For the Wrist-DINO state-only real-world variant, fill in the camera IDs and remote policy host/port in `examples/scripts/run_real_dino.sh`, then run:
 ```
 export HF_ENDPOINT=https://hf-mirror.com
-bash examples/scripts/run_real_dino.sh
+bash examples/scripts/run_real_dino.sh [--resume_from [RESUME_DIR]]
 ```
 This variant uses only the wrist camera for the RL steering policy image feature, featurized by `facebook/dinov2-small` into a 384-D CLS embedding. The full RL state is 2440-D: 7 joint positions, 1 gripper position, 2048-D pi0 VLM embedding, and 384-D DINO feature. The pi0 policy request still keeps its expected DROID inputs. The first run may download/cache the DINO-v2-small model through HuggingFace Transformers.
 
+<<<<<<< Updated upstream
 #### Resuming a Wrist-DINO training run
 
 Every `--checkpoint_interval` gradient steps (default 10 000) the training loop automatically saves three files to `outputdir`:
@@ -129,6 +130,8 @@ python3 examples/launch_train_real_dino.py \
 ```
 `--resume_from` reuses the existing output directory, restores the agent weights from the latest checkpoint, reloads the training counters, and refills the replay buffer. It is mutually exclusive with `--restore_path`.
 
+=======
+>>>>>>> Stashed changes
 ### Action Execution Parameters
 
 The training loop uses a HighFreqController (200 Hz, on the NUC) for smooth joint trajectory execution, matching the eval-time setup. Two key parameters control arm speed:

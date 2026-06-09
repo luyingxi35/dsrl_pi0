@@ -49,7 +49,7 @@ POLICY_PORT="8000"
 #   1.5 for normal training speed. Match action_scale: e.g. action_scale=0.5 with
 #   max_joint_speed_rad_s=1.5 allows up to 1.0 rad/step at 10 Hz without capping.
 ACTION_SCALE="0.5"
-MAX_JOINT_SPEED="0.5"
+MAX_JOINT_SPEED="0.3"
 
 
 # Build resume flag (empty string when not resuming).
@@ -59,7 +59,6 @@ if [[ -n "${RESUME_FROM}" ]]; then
 fi
 
 python3 examples/launch_train_real_dino.py \
---resume_from /home/robot/yingxi/dsrl_pi0/logs/DSRL_pi0_FrankaDroid/dsrl_pi0_real_dino_2026_06_09_17_06_08_0000--s-0 \
 --algorithm state_sac \
 --env franka_droid \
 --prefix dsrl_pi0_real_dino \
