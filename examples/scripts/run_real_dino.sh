@@ -69,7 +69,7 @@ python3 examples/launch_train_real_dino.py \
 --max_steps 500000 \
 --eval_interval 2000 \
 --log_interval 100 \
---multi_grad_step 30 \
+--multi_grad_step 5 \
 --action_magnitude 2.0 \
 --instruction 'pick up the blue peg' \
 --query_freq 8 \
