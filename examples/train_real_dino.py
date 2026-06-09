@@ -9,6 +9,7 @@ from pathlib import Path
 
 import gymnasium as gym
 import jax
+import jax.numpy as jnp
 import numpy as np
 import tensorflow as tf
 from gym.spaces import Box, Dict
@@ -280,17 +281,29 @@ def main(variant):
             initial_completed       = saved_state.get('completed',        0)
             initial_successes       = saved_state.get('successes',        0)
             logging.info('Restored training state: %s', saved_state)
+            # Restore _rng from JSON (kept outside Flax checkpoint to avoid
+            # structural-mismatch silent failures on checkpoint restore).
+            if 'rng' in saved_state:
+                agent._rng = jnp.array(saved_state['rng'])
+                logging.info('Restored _rng from training_state.json')
             # Verify temperature was correctly restored from the Flax checkpoint.
+            # If Flax silently failed (restored=1.0 but saved!=1.0), force-patch
+            # the temperature params directly from the JSON backup.
             saved_temp = saved_state.get('temperature')
             if saved_temp is not None:
                 restored_temp = float(agent._temp.apply_fn({'params': agent._temp.params}))
                 if abs(restored_temp - saved_temp) > 0.01:
                     logging.warning(
-                        'Temperature mismatch after checkpoint restore: '
-                        'restored=%.4f, saved=%.4f. '
-                        'Flax checkpoint may not have restored _temp correctly.',
+                        'Temperature mismatch (restored=%.4f, saved=%.4f): '
+                        'Flax checkpoint restore failed silently. '
+                        'Force-patching temperature params from JSON backup.',
                         restored_temp, saved_temp,
                     )
+                    # Override log_temp param. Adam opt_state resets to zero,
+                    # which is acceptable for a scalar — it re-warms in a few steps.
+                    new_params = {'log_temp': jnp.full((), float(jnp.log(saved_temp)))}
+                    agent._temp = agent._temp.replace(params=new_params)
+                    logging.info('Temperature force-patched to %.4f', saved_temp)
                 else:
                     logging.info('Temperature restored correctly: %.4f', restored_temp)
         else:
