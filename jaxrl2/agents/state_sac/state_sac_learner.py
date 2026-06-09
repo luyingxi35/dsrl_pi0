@@ -210,6 +210,7 @@ class StateSACLearner(Agent):
             'target_critic_params': self._target_critic_params,
             'actor': self._actor,
             'temp': self._temp,
+            'rng': self._rng,
         }
 
     def restore_checkpoint(self, dir):
@@ -219,4 +220,6 @@ class StateSACLearner(Agent):
         self._critic = output_dict['critic']
         self._target_critic_params = output_dict['target_critic_params']
         self._temp = output_dict['temp']
-        print('restored from ', dir)
+        self._rng = output_dict['rng']
+        temp_val = float(self._temp.apply_fn({'params': self._temp.params}))
+        print(f'restored from {dir}  (temperature={temp_val:.4f})')
