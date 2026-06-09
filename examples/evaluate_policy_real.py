@@ -91,6 +91,7 @@ class ExecutionConfig:
     action_exec_latency: float = 0.01
     controller_frequency: float = 200.0
     action_scale: float = 0.5
+    max_joint_speed_rad_s: float = 0.5
 
 
 class RobotIO:
@@ -210,7 +211,8 @@ def run_rollout(
     # ── Pre-populate interpolator with a hold-in-place trajectory ─────────────
     _hold_joints  = np.tile(current_joints, (4, 1))
     _hold_offsets = [0.05, 0.20, 0.50, 1.00]
-    env._robot.add_waypoints(_hold_offsets, _hold_joints.tolist())
+    env._robot.add_waypoints(_hold_offsets, _hold_joints.tolist(),
+                             max_joint_speed_rad_s=exec_config.max_joint_speed_rad_s)
     time.sleep(0.05)
 
     # ── Inference concurrency ──────────────────────────────────────────────────
@@ -316,7 +318,8 @@ def run_rollout(
                     new_a = new_actions[is_new][: exec_config.execution_steps]
 
                     arm_time_offsets = (new_t - exec_config.robot_action_latency) - time.time()
-                    env._robot.add_waypoints(arm_time_offsets.tolist(), arm_positions.tolist())
+                    env._robot.add_waypoints(arm_time_offsets.tolist(), arm_positions.tolist(),
+                                             max_joint_speed_rad_s=exec_config.max_joint_speed_rad_s)
 
                     scheduled_gripper_actions = [
                         (ts, float(binarize_and_clip_action(a)[-1]))
@@ -415,6 +418,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--controller_frequency", default=200.0, type=float)
     parser.add_argument("--action_scale", default=0.5, type=float,
         help="Scale factor on DROID training max_joint_delta (0.2 rad/step). Default: 0.5.")
+    parser.add_argument("--max_joint_speed_rad_s", default=0.5, type=float,
+        help="NUC-side per-joint speed cap (rad/s) passed to add_waypoints. Default: 0.5.")
     # ── Observation latencies ─────────────────────────────────────────────────
     parser.add_argument("--wrist_camera_obs_latency", default=None, type=float)
     parser.add_argument("--exterior_camera_obs_latency", default=None, type=float)
@@ -465,15 +470,18 @@ def run_evaluation(args: argparse.Namespace) -> None:
         action_exec_latency=args.action_exec_latency,
         controller_frequency=args.controller_frequency,
         action_scale=args.action_scale,
+        max_joint_speed_rad_s=args.max_joint_speed_rad_s,
     )
     logging.info(
         "ExecutionConfig: execution_steps=%d robot_action_latency=%.3fs "
         "gripper_action_latency=%.3fs action_exec_latency=%.3fs "
-        "controller_frequency=%.0fHz action_scale=%.2f (max_joint_delta=%.3f rad/step)",
+        "controller_frequency=%.0fHz action_scale=%.2f (max_joint_delta=%.3f rad/step) "
+        "max_joint_speed_rad_s=%.2f",
         exec_config.execution_steps, exec_config.robot_action_latency,
         exec_config.gripper_action_latency, exec_config.action_exec_latency,
         exec_config.controller_frequency,
         exec_config.action_scale, 0.2 * exec_config.action_scale,
+        exec_config.max_joint_speed_rad_s,
     )
 
     _cfg_defaults = EvalRobotConfig.__dataclass_fields__
