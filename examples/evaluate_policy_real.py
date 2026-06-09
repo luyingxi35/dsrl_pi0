@@ -190,6 +190,7 @@ def run_rollout(
     successes: int,
     outputdir: Path,
     exec_config: ExecutionConfig | None = None,
+    diagnostic_dir: Path | None = None,
 ) -> RolloutResult:
     from jaxrl2.utils.noise_utils import make_full_horizon_noise
     from tqdm import tqdm
@@ -215,13 +216,22 @@ def run_rollout(
                              max_joint_speed_rad_s=exec_config.max_joint_speed_rad_s)
     time.sleep(0.05)
 
+    # ── Diagnostic data collector ──────────────────────────────────────────────
+    diag: dict | None = None
+    if diagnostic_dir is not None:
+        diag = dict(
+            joint_positions=[], gripper_positions=[], obs_timestamps=[],
+            infer_steps=[], rl_noises=[], pi0_chunks=[],
+            exec_positions=[], exec_timestamps=[],
+        )
+
     # ── Inference concurrency ──────────────────────────────────────────────────
     # policy_service.infer + DINO encode + JAX agent.eval_actions run in background.
     # Gripper and zerorpc calls stay on main thread (gevent-safe requirement).
     inference_queue: queue.Queue = queue.Queue()
     inference_in_progress = threading.Event()
 
-    def _run_inference(obs_snapshot: dict, t_obs: float) -> None:
+    def _run_inference(obs_snapshot: dict, t_obs: float, t_step: int) -> None:
         try:
             # 1. Build pi0 request dict (images + joint/gripper + instruction)
             request_data = get_pi0_input_eval(obs_snapshot, args.instruction)
@@ -234,7 +244,13 @@ def run_rollout(
             _, noise = make_full_horizon_noise(actions_noise, agent.action_chunk_shape)
             # 5. Pi0 server denoises with RL noise → joint-velocity action chunk
             response = policy_service.infer(request_data, noise=np.asarray(noise))
-            inference_queue.put((np.asarray(response["actions"]), t_obs))
+            inference_queue.put({
+                'actions':     np.asarray(response["actions"]),
+                't_obs':       t_obs,
+                't_step':      t_step,
+                'rl_noise':    np.asarray(actions_noise),
+                'pi0_actions': np.asarray(response["actions"]),
+            })
         except Exception:
             logging.exception("run_rollout: inference failed in background thread")
         finally:
@@ -288,6 +304,13 @@ def run_rollout(
                     (time.time() - obs_timestamp) * 1000,
                 )
 
+            # ── 1b. Record per-step observation for diagnostics ────────────────
+            if diag is not None:
+                diag['joint_positions'].append(curr_obs["joint_position"].copy())
+                diag['gripper_positions'].append(
+                    curr_obs.get("gripper_position", np.zeros(1)).copy())
+                diag['obs_timestamps'].append(obs_timestamp)
+
             # ── 2. Drain inference queue (keep most recent result) ─────────────
             latest_result = None
             while not inference_queue.empty():
@@ -297,7 +320,14 @@ def run_rollout(
                     break
 
             if latest_result is not None:
-                new_actions, t_obs = latest_result
+                new_actions = latest_result['actions']
+                t_obs       = latest_result['t_obs']
+                # Record inference diagnostic data
+                if diag is not None:
+                    diag['infer_steps'].append(latest_result['t_step'])
+                    diag['rl_noises'].append(latest_result['rl_noise'])
+                    diag['pi0_chunks'].append(latest_result['pi0_actions'])
+
                 action_timestamps = t_obs + np.arange(len(new_actions)) * dt_step
                 curr_time = time.time()
                 is_new = action_timestamps > (curr_time + exec_config.action_exec_latency)
@@ -321,6 +351,12 @@ def run_rollout(
                     env._robot.add_waypoints(arm_time_offsets.tolist(), arm_positions.tolist(),
                                              max_joint_speed_rad_s=exec_config.max_joint_speed_rad_s)
 
+                    # Record commanded positions for diagnostics
+                    if diag is not None:
+                        for pos, ts in zip(arm_positions, new_t):
+                            diag['exec_positions'].append(pos.copy())
+                            diag['exec_timestamps'].append(float(ts))
+
                     scheduled_gripper_actions = [
                         (ts, float(binarize_and_clip_action(a)[-1]))
                         for ts, a in zip(new_t, new_a)
@@ -333,7 +369,7 @@ def run_rollout(
                 inference_in_progress.set()
                 threading.Thread(
                     target=_run_inference,
-                    args=(curr_obs, obs_timestamp),
+                    args=(curr_obs, obs_timestamp, t),
                     daemon=True,
                     name=f"Infer-t{t}",
                 ).start()
@@ -382,6 +418,36 @@ def run_rollout(
     success, failure_reason = decision
     duration_s = time.time() - start_time
     video_path = save_rollout_video(outputdir, episode_id, image_list)
+
+    # ── Save diagnostic .npz ───────────────────────────────────────────────────
+    if diag is not None and diagnostic_dir is not None:
+        _d = diagnostic_dir
+        _d.mkdir(parents=True, exist_ok=True)
+        npz_path = _d / f"episode_{episode_id:03d}.npz"
+        def _arr(lst):
+            return np.array(lst) if lst else np.array([])
+        np.savez(
+            npz_path,
+            # Per control step
+            joint_positions  = _arr(diag['joint_positions']),   # (T, 7)
+            gripper_positions= _arr(diag['gripper_positions']),  # (T, 1)
+            obs_timestamps   = _arr(diag['obs_timestamps']),     # (T,)
+            # Per inference trigger
+            infer_steps  = _arr(diag['infer_steps']),    # (N_infer,)
+            rl_noises    = _arr(diag['rl_noises']),      # (N_infer, horizon, noise_dim)
+            pi0_chunks   = _arr(diag['pi0_chunks']),     # (N_infer, horizon, 32)
+            # Per waypoint sent to robot
+            exec_positions  = _arr(diag['exec_positions']),   # (N_exec, 7)
+            exec_timestamps = _arr(diag['exec_timestamps']),  # (N_exec,)
+            # Episode metadata
+            success       = np.array(success),
+            duration_s    = np.array(duration_s),
+            episode_id    = np.array(episode_id),
+            action_scale  = np.array(exec_config.action_scale),
+            max_joint_delta = np.array(0.2 * exec_config.action_scale),
+            dt_step       = np.array(dt_step),
+        )
+        logging.info("Diagnostic data saved to %s", npz_path)
 
     return RolloutResult(
         episode_id=episode_id,
@@ -450,6 +516,8 @@ def build_parser() -> argparse.ArgumentParser:
     # ── Misc ──────────────────────────────────────────────────────────────────
     parser.add_argument("--seed", default=0, type=int)
     parser.add_argument("--outputdir", default=None)
+    parser.add_argument("--diagnostic_dir", default=None,
+        help="If set, save per-episode .npz diagnostic files to this directory.")
     return parser
 
 
@@ -568,6 +636,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
                 args, env, policy_service, robot_io, agent, obs_builder, ui,
                 episode_id, completed, successes, outputdir,
                 exec_config=exec_config,
+                diagnostic_dir=Path(args.diagnostic_dir) if args.diagnostic_dir else None,
             )
 
             completed += 1
