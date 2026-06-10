@@ -223,6 +223,11 @@ def run_rollout(
             joint_positions=[], gripper_positions=[], obs_timestamps=[],
             infer_steps=[], rl_noises=[], pi0_chunks=[],
             exec_positions=[], exec_timestamps=[],
+            # Staleness: per inference result that was drained from the queue
+            drain_at_steps=[],    # control step t when result was drained
+            n_fresh=[],           # how many actions in chunk were still fresh
+            n_stale=[],           # how many were already expired
+            all_stale_steps=[],   # control steps where ALL actions were stale
         )
 
     # ── Inference concurrency ──────────────────────────────────────────────────
@@ -287,11 +292,17 @@ def run_rollout(
             t_step_end = t_loop_start + (t + 1) * dt_step
 
             # ── 1. Observation (latency-corrected, UMI-style) ──────────────────
-            state_history = env._robot.get_state_history(n=100)   # last 0.5 s @ 200 Hz
+            try:
+                state_history = env._robot.get_state_history(n=100)   # last 0.5 s @ 200 Hz
+                _env_obs = env.get_observation()
+            except Exception:
+                logging.exception("Observation failed at t=%d", t)
+                import traceback; traceback.print_exc()
+                import pdb; pdb.set_trace()
             curr_obs, obs_timestamp = extract_observation_eval(
                 robot_config.wrist_camera_id,
                 robot_config.exterior_camera_id,
-                env.get_observation(),
+                _env_obs,
                 wrist_obs_latency=robot_config.wrist_camera_obs_latency,
                 exterior_obs_latency=robot_config.exterior_camera_obs_latency,
                 proprioceptive_latency=robot_config.proprioceptive_latency,
@@ -332,6 +343,12 @@ def run_rollout(
                 curr_time = time.time()
                 is_new = action_timestamps > (curr_time + exec_config.action_exec_latency)
 
+                # Record staleness diagnostics
+                if diag is not None:
+                    diag['drain_at_steps'].append(t)
+                    diag['n_fresh'].append(int(np.sum(is_new)))
+                    diag['n_stale'].append(int(np.sum(~is_new)))
+
                 if np.any(is_new):
                     # Integrate the FULL chunk first (including stale frames) so
                     # absolute positions are consistent; then extract is_new slice.
@@ -348,8 +365,12 @@ def run_rollout(
                     new_a = new_actions[is_new][: exec_config.execution_steps]
 
                     arm_time_offsets = (new_t - exec_config.robot_action_latency) - time.time()
-                    env._robot.add_waypoints(arm_time_offsets.tolist(), arm_positions.tolist(),
-                                             max_joint_speed_rad_s=exec_config.max_joint_speed_rad_s)
+                    try:
+                        env._robot.add_waypoints(arm_time_offsets.tolist(), arm_positions.tolist(),
+                                                 max_joint_speed_rad_s=exec_config.max_joint_speed_rad_s)
+                    except Exception:
+                        import traceback; traceback.print_exc()
+                        import pdb; pdb.set_trace()
 
                     # Record commanded positions for diagnostics
                     if diag is not None:
@@ -363,6 +384,8 @@ def run_rollout(
                     ]
                 else:
                     logging.warning("run_rollout: all actions stale at t=%d", t)
+                    if diag is not None:
+                        diag['all_stale_steps'].append(t)
 
             # ── 3. Trigger inference (aligned with execution_steps cadence) ─────
             if t % exec_config.execution_steps == 0 and not inference_in_progress.is_set():
@@ -384,7 +407,11 @@ def run_rollout(
                 _, gripper_to_exec = scheduled_gripper_actions.pop(0)
 
             if gripper_to_exec is not None:
-                env._robot.update_gripper(gripper_to_exec, velocity=False, blocking=False)
+                try:
+                    env._robot.update_gripper(gripper_to_exec, velocity=False, blocking=False)
+                except Exception:
+                    import traceback; traceback.print_exc()
+                    import pdb; pdb.set_trace()
 
             # ── 5. UI & bookkeeping ────────────────────────────────────────────
             ui.update_camera_previews(
@@ -409,7 +436,10 @@ def run_rollout(
 
     finally:
         pbar.close()
-        env._robot.stop_trajectory_controller()
+        try:
+            env._robot.stop_trajectory_controller()
+        except Exception:
+            import traceback; traceback.print_exc()
         inference_in_progress.wait(timeout=5.0)
 
     if decision is None:
@@ -439,6 +469,11 @@ def run_rollout(
             # Per waypoint sent to robot
             exec_positions  = _arr(diag['exec_positions']),   # (N_exec, 7)
             exec_timestamps = _arr(diag['exec_timestamps']),  # (N_exec,)
+            # Staleness: per drained inference result
+            drain_at_steps  = _arr(diag['drain_at_steps']),   # (N_drained,)
+            n_fresh         = _arr(diag['n_fresh']),           # (N_drained,) int
+            n_stale         = _arr(diag['n_stale']),           # (N_drained,) int
+            all_stale_steps = _arr(diag['all_stale_steps']),  # (N_all_stale,)
             # Episode metadata
             success       = np.array(success),
             duration_s    = np.array(duration_s),

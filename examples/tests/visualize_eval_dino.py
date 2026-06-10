@@ -157,6 +157,57 @@ def plot_episode(data: dict, output_pdf: str) -> None:
         pdf.savefig(fig)
         plt.close(fig)
 
+        # ── Page 4: Staleness analysis ────────────────────────────────────────────
+        drain_steps  = _safe(data.get("drain_at_steps"))  # (N_drained,)
+        n_fresh_arr  = _safe(data.get("n_fresh"))          # (N_drained,)
+        n_stale_arr  = _safe(data.get("n_stale"))          # (N_drained,)
+        all_stale_s  = _safe(data.get("all_stale_steps"))  # (N_all_stale,)
+
+        if drain_steps is not None and len(drain_steps) > 0:
+            fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=False)
+            fig.suptitle(
+                f"Episode {episode_id} — Action staleness\n"
+                f"Chunk size={len(pi0_chunks[0]) if pi0_chunks is not None else '?'}  "
+                f"Total drained={len(drain_steps)}  "
+                f"All-stale events={len(all_stale_s) if all_stale_s is not None else 0}",
+                fontsize=11,
+            )
+
+            # 4a: stacked bar — fresh vs stale per inference result
+            ax = axes[0]
+            x = drain_steps * dt_step
+            ax.bar(x, n_fresh_arr, width=dt_step * 0.8,
+                   color="steelblue", label="fresh")
+            ax.bar(x, n_stale_arr, width=dt_step * 0.8,
+                   bottom=n_fresh_arr, color="tomato", label="stale")
+            if all_stale_s is not None and len(all_stale_s) > 0:
+                for xs in all_stale_s * dt_step:
+                    ax.axvline(xs, color="black", lw=1.5, ls="--", alpha=0.7)
+            ax.set_ylabel("Actions in chunk")
+            ax.set_xlabel("Time when result drained (s)")
+            ax.legend(fontsize=9)
+            ax.grid(True, alpha=0.3)
+            ax.set_title("Fresh vs stale actions per drained inference result\n"
+                         "(dashed = all-stale event)")
+
+            # 4b: histogram — stale count distribution
+            ax2 = axes[1]
+            chunk_size = int(n_fresh_arr[0] + n_stale_arr[0]) if len(n_fresh_arr) > 0 else 8
+            bins = np.arange(-0.5, chunk_size + 1.5, 1)
+            ax2.hist(n_stale_arr, bins=bins, color="tomato", edgecolor="black", alpha=0.8)
+            ax2.set_xlabel("Stale action count")
+            ax2.set_ylabel("Frequency")
+            ax2.set_title(
+                f"Distribution of stale actions  |  "
+                f"mean={n_stale_arr.mean():.2f}  max={n_stale_arr.max()}  "
+                f"zero-stale={np.sum(n_stale_arr == 0)}/{len(n_stale_arr)}"
+            )
+            ax2.grid(True, alpha=0.3)
+
+            fig.tight_layout(rect=[0, 0, 1, 0.93])
+            pdf.savefig(fig)
+            plt.close(fig)
+
     print(f"Saved: {output_pdf}")
 
 
