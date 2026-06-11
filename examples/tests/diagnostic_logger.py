@@ -44,10 +44,16 @@ class DiagnosticLogger:
         # ── Inference ─────────────────────────────────────────────────────────
         self._infer_triggered:    list[bool]  = []   # inference thread started this tick
         self._infer_recv:         list[bool]  = []   # inference result arrived this tick
+        self._infer_source_step:  list[int]   = []   # obs step used by returned result, -1 if none
         self._n_returned:         list[int]   = []   # actions returned by pi0 (0 if none)
         self._n_is_new:           list[int]   = []   # passed is_new filter
+        self._n_stale:            list[int]   = []   # stale actions in returned chunk
         self._n_scheduled:        list[int]   = []   # min(n_is_new, execution_steps)
         self._all_stale:          list[bool]  = []   # all actions were stale
+        self._infer_latency_s:    list[float] = []   # submit→result wall-clock latency
+        self._obs_age_at_submit_s: list[float] = []  # submit time minus t_obs
+        self._obs_age_at_drain_s:  list[float] = []  # drain time minus t_obs
+        self._result_queue_delay_s: list[float] = [] # drain time minus inference done
         # ── Arm execution ─────────────────────────────────────────────────────
         # Ragged lists: each element is an (N, 7) or (0, 7) array.
         self._arm_times_sent:     list[Any]   = []   # wall-clock target times per waypoint
@@ -69,10 +75,16 @@ class DiagnosticLogger:
         state_history_span: float,
         infer_triggered:    bool,
         infer_result_recv:  bool,
+        infer_source_step:  int | None,
         n_returned:         int,
         n_is_new:           int,
+        n_stale:            int,
         n_scheduled:        int,
         all_stale:          bool,
+        infer_latency_s:    float | None,
+        obs_age_at_submit_s: float | None,
+        obs_age_at_drain_s:  float | None,
+        result_queue_delay_s: float | None,
         arm_times_sent:     np.ndarray | None,      # (N,) or None
         arm_positions_sent: np.ndarray | None,      # (N, 7) or None
         gripper_cmd_sent:   float | None,
@@ -97,10 +109,26 @@ class DiagnosticLogger:
 
         self._infer_triggered.append(infer_triggered)
         self._infer_recv.append(infer_result_recv)
+        self._infer_source_step.append(
+            int(infer_source_step) if infer_source_step is not None else -1
+        )
         self._n_returned.append(n_returned)
         self._n_is_new.append(n_is_new)
+        self._n_stale.append(n_stale)
         self._n_scheduled.append(n_scheduled)
         self._all_stale.append(all_stale)
+        self._infer_latency_s.append(
+            float(infer_latency_s) if infer_latency_s is not None else math.nan
+        )
+        self._obs_age_at_submit_s.append(
+            float(obs_age_at_submit_s) if obs_age_at_submit_s is not None else math.nan
+        )
+        self._obs_age_at_drain_s.append(
+            float(obs_age_at_drain_s) if obs_age_at_drain_s is not None else math.nan
+        )
+        self._result_queue_delay_s.append(
+            float(result_queue_delay_s) if result_queue_delay_s is not None else math.nan
+        )
 
         if arm_times_sent is not None and len(arm_times_sent) > 0:
             self._arm_times_sent.append(np.asarray(arm_times_sent, dtype=np.float64))
@@ -151,10 +179,16 @@ class DiagnosticLogger:
             # Inference
             infer_triggered    = np.array(self._infer_triggered, dtype=bool),
             infer_recv         = np.array(self._infer_recv,      dtype=bool),
+            infer_source_step  = np.array(self._infer_source_step, dtype=np.int32),
             n_returned         = np.array(self._n_returned,  dtype=np.int32),
             n_is_new           = np.array(self._n_is_new,    dtype=np.int32),
+            n_stale            = np.array(self._n_stale,     dtype=np.int32),
             n_scheduled        = np.array(self._n_scheduled, dtype=np.int32),
             all_stale          = np.array(self._all_stale,   dtype=bool),
+            infer_latency_s    = np.array(self._infer_latency_s),
+            obs_age_at_submit_s = np.array(self._obs_age_at_submit_s),
+            obs_age_at_drain_s  = np.array(self._obs_age_at_drain_s),
+            result_queue_delay_s = np.array(self._result_queue_delay_s),
             # Arm execution (object arrays for ragged shapes)
             arm_times_sent     = arm_times_arr,
             arm_positions_sent = arm_positions_arr,
