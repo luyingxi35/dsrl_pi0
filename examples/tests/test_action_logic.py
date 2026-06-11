@@ -23,7 +23,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
-from examples.utils.real_robot_common import binarize_and_clip_action
+from examples.utils.real_robot_common import (
+    LatestObservationBuffer,
+    action_timestamps_from_obs,
+    binarize_and_clip_action,
+)
 
 
 # ── is_new filtering ──────────────────────────────────────────────────────────
@@ -32,15 +36,15 @@ def test_is_new_with_past_t_obs() -> None:
     """When t_obs is in the past, early action_timestamps should be stale.
 
     Simulates: t_obs = 100ms ago, inference took 150ms.
-    At 10Hz (dt=100ms), 8 actions span 0ms to 700ms from t_obs.
-    After 150ms, actions[0] and actions[1] should be stale.
+    At 10Hz (dt=100ms), 8 actions span 100ms to 800ms from t_obs.
+    After 150ms, action[0] should be stale.
     """
     t_obs = time.time() - 0.100        # 100ms ago
     dt_step = 0.100                    # 10Hz
     n_actions = 8
     action_exec_latency = 0.01
 
-    action_timestamps = t_obs + np.arange(n_actions) * dt_step
+    action_timestamps = action_timestamps_from_obs(t_obs, n_actions, dt_step)
     curr_time = time.time()
     is_new = action_timestamps > (curr_time + action_exec_latency)
 
@@ -50,8 +54,69 @@ def test_is_new_with_past_t_obs() -> None:
 
     assert n_new >= 1,          "Expected at least 1 future action"
     assert n_new < n_actions,   "Expected at least 1 stale action (t_obs is in the past)"
-    assert not is_new[0],       "action[0] should be stale (target = t_obs ≈ 100ms ago)"
+    assert not is_new[0],       "action[0] should be stale (target = t_obs + dt)"
     print("  [PASS] is_new filter with past t_obs")
+
+
+def test_action_timestamps_start_at_next_tick() -> None:
+    """Eval action timestamps must match training: first target is t_obs + dt."""
+    t_obs = 123.0
+    dt_step = 0.1
+    stamps = action_timestamps_from_obs(t_obs, 4, dt_step)
+    expected = np.array([123.1, 123.2, 123.3, 123.4])
+
+    assert np.allclose(stamps, expected), f"Expected {expected}, got {stamps}"
+    print("  [PASS] action timestamps start at t_obs + dt")
+
+
+def test_eval_timestamp_off_by_one_reduces_stale_actions() -> None:
+    """Starting at k=1 recovers one fresh action versus the old k=0 schedule."""
+    t_obs = 1000.0
+    dt_step = 0.1
+    n_actions = 8
+    action_exec_latency = 0.01
+    curr_time = t_obs + 0.45
+
+    old_timestamps = t_obs + np.arange(n_actions) * dt_step
+    new_timestamps = action_timestamps_from_obs(t_obs, n_actions, dt_step)
+    old_is_new = old_timestamps > (curr_time + action_exec_latency)
+    new_is_new = new_timestamps > (curr_time + action_exec_latency)
+
+    assert int(np.sum(new_is_new)) == int(np.sum(old_is_new)) + 1
+    print(
+        "  [PASS] k=1 timestamp schedule recovers one fresh action "
+        f"({int(np.sum(old_is_new))} -> {int(np.sum(new_is_new))})"
+    )
+
+
+def test_latest_observation_buffer_skips_old_observations() -> None:
+    """Continuous worker should consume the newest observation, not backlog."""
+    buf = LatestObservationBuffer()
+    buf.publish({"value": "old"}, t_obs=1.0, step_id=1, t_publish=10.0)
+    buf.publish({"value": "new"}, t_obs=2.0, step_id=2, t_publish=20.0)
+
+    snap = buf.wait_for_new(last_step_id=-1, timeout=0.01)
+
+    assert snap is not None
+    assert snap.step_id == 2
+    assert snap.obs["value"] == "new"
+    print("  [PASS] latest observation buffer skips old observations")
+
+
+def test_latest_observation_buffer_waits_for_new_step() -> None:
+    """A worker should not repeat the same observation step."""
+    buf = LatestObservationBuffer()
+    buf.publish({"value": "only"}, t_obs=1.0, step_id=7, t_publish=10.0)
+
+    first = buf.wait_for_new(last_step_id=-1, timeout=0.01)
+    repeated = buf.wait_for_new(last_step_id=7, timeout=0.01)
+    buf.close()
+    closed = buf.wait_for_new(last_step_id=7, timeout=0.01)
+
+    assert first is not None and first.step_id == 7
+    assert repeated is None
+    assert closed is None
+    print("  [PASS] latest observation buffer waits for a new step")
 
 
 def test_is_new_all_new_when_t_obs_is_now() -> None:
@@ -61,7 +126,7 @@ def test_is_new_all_new_when_t_obs_is_now() -> None:
     n_actions = 4
     action_exec_latency = 0.01
 
-    action_timestamps = t_obs + np.arange(n_actions) * dt_step
+    action_timestamps = action_timestamps_from_obs(t_obs, n_actions, dt_step)
     curr_time = time.time()
     t_obs = curr_time
     print(f"  action_timestamps: {action_timestamps}")
@@ -113,10 +178,10 @@ def test_velocity_integration_cumulative() -> None:
     action_scale   = 1.0
     MAX_JOINT_DELTA = 0.2 * action_scale
 
-    # Full chunk: 4 actions at velocity 1.0 for joint 0
-    all_actions = [np.array([1.0] + [0.0] * 6)] * 4
+    # Full chunk: 4 actions at velocity 1.0 for joint 0 plus gripper dim
+    all_actions = [np.array([1.0] + [0.0] * 7)] * 4
 
-    current = np.zeros(6)
+    current = np.zeros(7)
 
     # Simulate correct integration (over ALL actions, then take is_new slice):
     running_all = current.copy()
@@ -159,8 +224,8 @@ def test_velocity_integration_integrate_all_then_filter() -> None:
     action_scale = 1.0
     MAX_JOINT_DELTA = 0.2 * action_scale
 
-    # 4-action chunk, all joint-0 velocity = 1.0
-    all_actions = [np.array([1.0] + [0.0] * 6)] * 4   # shape (4, 7)
+    # 4-action chunk, all joint-0 velocity = 1.0 plus gripper dim
+    all_actions = [np.array([1.0] + [0.0] * 7)] * 4   # shape (4, 8)
     is_new = [False, False, True, True]
     current = np.zeros(7)
 
@@ -247,6 +312,10 @@ def test_clip_arm_dimensions() -> None:
 if __name__ == "__main__":
     print("=== Action Logic Tests ===\n")
     test_is_new_with_past_t_obs()
+    test_action_timestamps_start_at_next_tick()
+    test_eval_timestamp_off_by_one_reduces_stale_actions()
+    test_latest_observation_buffer_skips_old_observations()
+    test_latest_observation_buffer_waits_for_new_step()
     # test_is_new_all_new_when_t_obs_is_now()
     test_velocity_integration_basic()
     test_velocity_integration_full_speed()

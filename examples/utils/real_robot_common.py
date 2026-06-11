@@ -11,6 +11,7 @@ import dataclasses
 import datetime as dt
 import logging
 from pathlib import Path
+import threading
 import time
 from typing import Any
 
@@ -567,6 +568,85 @@ def binarize_and_clip_action(action: np.ndarray) -> np.ndarray:
     """Binarize gripper dimension (last) and clip all dims to [-1, 1]."""
     gripper = np.ones((1,)) if action[-1].item() > 0.5 else np.zeros((1,))
     return np.clip(np.concatenate([action[:-1], gripper]), -1, 1)
+
+
+def action_timestamps_from_obs(t_obs: float, n_actions: int, dt_step: float) -> np.ndarray:
+    """Return wall-clock target times for an action chunk from observation time.
+
+    The first predicted action targets the next control tick, not the observation
+    instant itself. This matches the real training rollout scheduling and avoids
+    losing one control tick to the stale-action filter during async eval.
+    """
+    return float(t_obs) + np.arange(1, int(n_actions) + 1, dtype=np.float64) * float(dt_step)
+
+
+@dataclasses.dataclass(frozen=True)
+class ObservationSnapshot:
+    """Latest observation package consumed by continuous inference workers."""
+
+    obs: dict[str, Any]
+    t_obs: float
+    step_id: int
+    t_publish: float
+
+
+class LatestObservationBuffer:
+    """Thread-safe single-slot observation buffer.
+
+    Producers overwrite the slot every control tick. Consumers wait for a
+    strictly newer step id and therefore skip stale observations accumulated
+    while inference was running.
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._latest: ObservationSnapshot | None = None
+        self._closed = False
+
+    def publish(
+        self,
+        obs: dict[str, Any],
+        t_obs: float,
+        step_id: int,
+        t_publish: float | None = None,
+    ) -> None:
+        with self._cond:
+            if self._closed:
+                return
+            self._latest = ObservationSnapshot(
+                obs=obs,
+                t_obs=float(t_obs),
+                step_id=int(step_id),
+                t_publish=time.time() if t_publish is None else float(t_publish),
+            )
+            self._cond.notify_all()
+
+    def wait_for_new(
+        self,
+        last_step_id: int,
+        timeout: float = 0.1,
+    ) -> ObservationSnapshot | None:
+        deadline = time.time() + float(timeout)
+        with self._cond:
+            while (
+                not self._closed
+                and (
+                    self._latest is None
+                    or self._latest.step_id <= int(last_step_id)
+                )
+            ):
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return None
+                self._cond.wait(timeout=remaining)
+            if self._closed:
+                return None
+            return self._latest
+
+    def close(self) -> None:
+        with self._cond:
+            self._closed = True
+            self._cond.notify_all()
 
 
 # ── Video utilities ────────────────────────────────────────────────────────────

@@ -28,6 +28,8 @@ from utils.real_robot_common import (
     RolloutResult,
     HumanEvalUI,
     binarize_and_clip_action,
+    action_timestamps_from_obs,
+    LatestObservationBuffer,
     extract_observation_eval,
     get_pi0_input_eval,
     save_rollout_video,
@@ -176,19 +178,35 @@ def run_rollout(
 
     # ── Inference concurrency ──────────────────────────────────────────────────
     # Gripper and obs calls use zerorpc/gevent → must stay on main thread.
-    # policy_service.infer() uses openpi websocket (not gevent) → safe in thread.
+    # policy_service.infer() uses openpi websocket (not gevent) → safe in one
+    # continuous worker thread that consumes the newest unseen observation.
     inference_queue: queue.Queue = queue.Queue()
-    inference_in_progress = threading.Event()
+    obs_buffer = LatestObservationBuffer()
+    inference_stop = threading.Event()
 
-    def _run_inference(obs_snapshot: dict, t_obs: float) -> None:
-        try:
-            request_data = get_pi0_input_eval(obs_snapshot, args.instruction)
-            response = policy_service.infer(request_data)
-            inference_queue.put((np.asarray(response["actions"]), t_obs))
-        except Exception:
-            logging.exception("run_rollout: inference failed in background thread")
-        finally:
-            inference_in_progress.clear()
+    def _inference_worker() -> None:
+        last_step_id = -1
+        while not inference_stop.is_set():
+            snapshot = obs_buffer.wait_for_new(last_step_id, timeout=0.1)
+            if snapshot is None:
+                continue
+            last_step_id = snapshot.step_id
+            t_submit = time.time()
+            obs_age_at_submit = t_submit - snapshot.t_obs
+            try:
+                request_data = get_pi0_input_eval(snapshot.obs, args.instruction)
+                response = policy_service.infer(request_data)
+                inference_queue.put({
+                    'actions': np.asarray(response["actions"]),
+                    't_obs': snapshot.t_obs,
+                    't_step': snapshot.step_id,
+                    't_publish': snapshot.t_publish,
+                    't_submit': t_submit,
+                    't_done': time.time(),
+                    'obs_age_at_submit': obs_age_at_submit,
+                })
+            except Exception:
+                logging.exception("run_rollout: inference failed in background worker")
 
     # ── Gripper scheduling (15Hz discrete, main thread) ────────────────────────
     scheduled_gripper_actions: list[tuple[float, float]] = []
@@ -201,6 +219,14 @@ def run_rollout(
     image_list: list[np.ndarray] = []
     decision: tuple[bool, str] | None = None
     env_steps = 0
+    consecutive_all_stale = 0
+
+    inference_thread = threading.Thread(
+        target=_inference_worker,
+        daemon=True,
+        name=f"Pi0InferWorker-ep{episode_id}",
+    )
+    inference_thread.start()
 
     try:
         pbar = tqdm(desc=f"pi0 eval episode {episode_id}", unit="step")
@@ -221,8 +247,14 @@ def run_rollout(
             # Per-tick diagnostic tracking (set to defaults; updated below)
             _diag_infer_triggered = False
             _diag_infer_recv      = False
+            _diag_infer_source_step = None
             _diag_n_returned      = 0
             _diag_n_is_new        = 0
+            _diag_n_stale         = 0
+            _diag_infer_latency_s = None
+            _diag_obs_age_at_submit_s = None
+            _diag_obs_age_at_drain_s = None
+            _diag_result_queue_delay_s = None
             _diag_n_scheduled     = 0
             _diag_all_stale       = False
             _diag_arm_times       = None
@@ -247,14 +279,16 @@ def run_rollout(
             )
             # obs_timestamp is now anchored to the camera capture time (past),
             # mirroring UMI's hardware-timestamp-based t_obs.
-            # action_timestamps = obs_timestamp + k*dt will correctly place
-            # early actions in the past so is_new filters them out.
+            # action_timestamps = obs_timestamp + (k+1)*dt targets future
+            # control ticks; slow inference can still make early actions stale.
             if t == 0:
                 logging.info(
                     "t_obs drift: %.1f ms (camera frame age = obs_latency + any extra delay; "
                     "tune *_camera_obs_latency if this deviates from expected latency)",
                     (time.time() - obs_timestamp) * 1000,
                 )
+
+            obs_buffer.publish(curr_obs, obs_timestamp, t, time.time())
 
             # ── 2. Drain inference queue (keep most recent) ────────────────────
             latest_result = None
@@ -266,13 +300,23 @@ def run_rollout(
 
             if latest_result is not None:
                 _diag_infer_recv = True
-                new_actions, t_obs = latest_result
-                action_timestamps = t_obs + np.arange(len(new_actions)) * dt_step
+                new_actions = latest_result['actions']
+                t_obs = latest_result['t_obs']
+                _diag_infer_source_step = latest_result['t_step']
+                t_submit = latest_result['t_submit']
+                t_done = latest_result['t_done']
+                _diag_infer_latency_s = t_done - t_submit
+                _diag_obs_age_at_submit_s = latest_result['obs_age_at_submit']
+                _diag_result_queue_delay_s = time.time() - t_done
+                action_timestamps = action_timestamps_from_obs(t_obs, len(new_actions), dt_step)
                 curr_time = time.time()
+                _diag_obs_age_at_drain_s = curr_time - t_obs
                 is_new = action_timestamps > (curr_time + exec_config.action_exec_latency)
                 _diag_n_returned = len(new_actions)
                 _diag_n_is_new   = int(np.sum(is_new))
+                _diag_n_stale    = int(np.sum(~is_new))
                 if np.any(is_new):
+                    consecutive_all_stale = 0
                     # ── Arm: integrate joint_velocity → absolute joint angles ──────
                     # pi0 outputs normalized joint velocities in [-1, 1]:
                     #   delta_k = clip(v_k, -1, 1) * MAX_JOINT_DELTA  (rad/step)
@@ -319,19 +363,21 @@ def run_rollout(
                         for ts, a in zip(new_t, new_a)
                     ]
                 else:
+                    consecutive_all_stale += 1
                     _diag_all_stale = True
-                    logging.warning("run_rollout: all actions stale at t=%d", t)
+                    logging.warning(
+                        "run_rollout: all actions stale at t=%d "
+                        "(consecutive=%d, infer_latency=%.3fs, horizon=%.3fs, "
+                        "obs_age=%.3fs, n_actions=%d)",
+                        t,
+                        consecutive_all_stale,
+                        _diag_infer_latency_s,
+                        len(new_actions) * dt_step,
+                        _diag_obs_age_at_drain_s,
+                        len(new_actions),
+                    )
 
-            # ── 3. Trigger inference (unconditional cadence, aligned with UMI) ──
-            if t % exec_config.execution_steps == 0 and not inference_in_progress.is_set():
-                _diag_infer_triggered = True
-                inference_in_progress.set()
-                threading.Thread(
-                    target=_run_inference,
-                    args=(curr_obs, obs_timestamp),
-                    daemon=True,
-                    name=f"Infer-t{t}",
-                ).start()
+            # ── 3. Inference runs continuously in _inference_worker ────────────
 
             # ── 4. Gripper execution (main thread, gevent-safe) ────────────────
             curr_time = time.time()
@@ -374,10 +420,16 @@ def run_rollout(
                     state_history_span=_sh_span,
                     infer_triggered=_diag_infer_triggered,
                     infer_result_recv=_diag_infer_recv,
+                    infer_source_step=_diag_infer_source_step,
                     n_returned=_diag_n_returned,
                     n_is_new=_diag_n_is_new,
+                    n_stale=_diag_n_stale,
                     n_scheduled=_diag_n_scheduled,
                     all_stale=_diag_all_stale,
+                    infer_latency_s=_diag_infer_latency_s,
+                    obs_age_at_submit_s=_diag_obs_age_at_submit_s,
+                    obs_age_at_drain_s=_diag_obs_age_at_drain_s,
+                    result_queue_delay_s=_diag_result_queue_delay_s,
                     arm_times_sent=_diag_arm_times,
                     arm_positions_sent=_diag_arm_positions,
                     gripper_cmd_sent=_diag_gripper_cmd,
@@ -393,8 +445,10 @@ def run_rollout(
 
     finally:
         pbar.close()
+        inference_stop.set()
+        obs_buffer.close()
         env._robot.stop_trajectory_controller()   # stops HighFreqController on NUC
-        inference_in_progress.wait(timeout=5.0)
+        inference_thread.join(timeout=5.0)
 
     if decision is None:
         decision = (False, "timeout")

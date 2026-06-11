@@ -40,6 +40,8 @@ from utils.real_robot_common import (
     RolloutResult,
     HumanEvalUI,
     binarize_and_clip_action,
+    action_timestamps_from_obs,
+    LatestObservationBuffer,
     extract_observation_eval,
     get_pi0_input_eval,
     save_rollout_video,
@@ -227,39 +229,57 @@ def run_rollout(
             drain_at_steps=[],    # control step t when result was drained
             n_fresh=[],           # how many actions in chunk were still fresh
             n_stale=[],           # how many were already expired
+            infer_latency_s=[],   # wall-clock inference latency per drained result
+            obs_age_at_submit_s=[],
+            obs_age_at_drain_s=[],
+            result_queue_delay_s=[],
             all_stale_steps=[],   # control steps where ALL actions were stale
         )
 
     # ── Inference concurrency ──────────────────────────────────────────────────
-    # policy_service.infer + DINO encode + JAX agent.eval_actions run in background.
+    # policy_service.infer + DINO encode + JAX agent.eval_actions run in a single
+    # continuous background worker. The worker always consumes the newest unseen
+    # observation and skips older observations that accumulated while inference ran.
     # Gripper and zerorpc calls stay on main thread (gevent-safe requirement).
     inference_queue: queue.Queue = queue.Queue()
-    inference_in_progress = threading.Event()
+    obs_buffer = LatestObservationBuffer()
+    inference_stop = threading.Event()
 
-    def _run_inference(obs_snapshot: dict, t_obs: float, t_step: int) -> None:
-        try:
-            # 1. Build pi0 request dict (images + joint/gripper + instruction)
-            request_data = get_pi0_input_eval(obs_snapshot, args.instruction)
-            # 2. Build 2440-dim state: proprio(8) + pi0_vlm(2048) + dino(384)
-            #    obs_builder.build() calls policy_service.get_prefix_rep() internally.
-            obs_dict = obs_builder.build(obs_snapshot, request_data, policy_service)
-            # 3. StateSAC actor predicts denoising noise
-            actions_noise = agent.eval_actions(obs_dict)
-            # 4. Reshape to (1, rl_noise_horizon, PI0_NOISE_DIM) for pi0 server
-            _, noise = make_full_horizon_noise(actions_noise, agent.action_chunk_shape)
-            # 5. Pi0 server denoises with RL noise → joint-velocity action chunk
-            response = policy_service.infer(request_data, noise=np.asarray(noise))
-            inference_queue.put({
-                'actions':     np.asarray(response["actions"]),
-                't_obs':       t_obs,
-                't_step':      t_step,
-                'rl_noise':    np.asarray(actions_noise),
-                'pi0_actions': np.asarray(response["actions"]),
-            })
-        except Exception:
-            logging.exception("run_rollout: inference failed in background thread")
-        finally:
-            inference_in_progress.clear()
+    def _inference_worker() -> None:
+        last_step_id = -1
+        while not inference_stop.is_set():
+            snapshot = obs_buffer.wait_for_new(last_step_id, timeout=0.1)
+            if snapshot is None:
+                continue
+            last_step_id = snapshot.step_id
+            t_submit = time.time()
+            obs_age_at_submit = t_submit - snapshot.t_obs
+            try:
+                # 1. Build pi0 request dict (images + joint/gripper + instruction)
+                request_data = get_pi0_input_eval(snapshot.obs, args.instruction)
+                # 2. Build 2440-dim state: proprio(8) + pi0_vlm(2048) + dino(384)
+                #    obs_builder.build() calls policy_service.get_prefix_rep() internally.
+                obs_dict = obs_builder.build(snapshot.obs, request_data, policy_service)
+                # 3. StateSAC actor predicts denoising noise
+                actions_noise = agent.eval_actions(obs_dict)
+                # 4. Reshape to (1, rl_noise_horizon, PI0_NOISE_DIM) for pi0 server
+                _, noise = make_full_horizon_noise(actions_noise, agent.action_chunk_shape)
+                # 5. Pi0 server denoises with RL noise → joint-velocity action chunk
+                response = policy_service.infer(request_data, noise=np.asarray(noise))
+                t_done = time.time()
+                inference_queue.put({
+                    'actions':     np.asarray(response["actions"]),
+                    't_obs':       snapshot.t_obs,
+                    't_step':      snapshot.step_id,
+                    't_publish':   snapshot.t_publish,
+                    't_submit':    t_submit,
+                    't_done':      t_done,
+                    'obs_age_at_submit': obs_age_at_submit,
+                    'rl_noise':    np.asarray(actions_noise),
+                    'pi0_actions': np.asarray(response["actions"]),
+                })
+            except Exception:
+                logging.exception("run_rollout: inference failed in background worker")
 
     # ── Gripper scheduling ─────────────────────────────────────────────────────
     scheduled_gripper_actions: list[tuple[float, float]] = []
@@ -272,9 +292,17 @@ def run_rollout(
     image_list: list[np.ndarray] = []
     decision: tuple[bool, str] | None = None
     env_steps = 0
+    consecutive_all_stale = 0
 
     _DROID_MAX_JOINT_DELTA = 0.2
     _MAX_JOINT_DELTA = _DROID_MAX_JOINT_DELTA * exec_config.action_scale
+
+    inference_thread = threading.Thread(
+        target=_inference_worker,
+        daemon=True,
+        name=f"DinoInferWorker-ep{episode_id}",
+    )
+    inference_thread.start()
 
     try:
         pbar = tqdm(desc=f"dino eval episode {episode_id}", unit="step")
@@ -322,6 +350,8 @@ def run_rollout(
                     curr_obs.get("gripper_position", np.zeros(1)).copy())
                 diag['obs_timestamps'].append(obs_timestamp)
 
+            obs_buffer.publish(curr_obs, obs_timestamp, t, time.time())
+
             # ── 2. Drain inference queue (keep most recent result) ─────────────
             latest_result = None
             while not inference_queue.empty():
@@ -333,14 +363,21 @@ def run_rollout(
             if latest_result is not None:
                 new_actions = latest_result['actions']
                 t_obs       = latest_result['t_obs']
+                infer_latency_s = latest_result['t_done'] - latest_result['t_submit']
+                result_queue_delay_s = time.time() - latest_result['t_done']
+                obs_age_at_submit_s = latest_result['obs_age_at_submit']
                 # Record inference diagnostic data
                 if diag is not None:
                     diag['infer_steps'].append(latest_result['t_step'])
                     diag['rl_noises'].append(latest_result['rl_noise'])
                     diag['pi0_chunks'].append(latest_result['pi0_actions'])
+                    diag['infer_latency_s'].append(float(infer_latency_s))
+                    diag['obs_age_at_submit_s'].append(float(obs_age_at_submit_s))
+                    diag['result_queue_delay_s'].append(float(result_queue_delay_s))
 
-                action_timestamps = t_obs + np.arange(len(new_actions)) * dt_step
+                action_timestamps = action_timestamps_from_obs(t_obs, len(new_actions), dt_step)
                 curr_time = time.time()
+                obs_age_at_drain_s = curr_time - t_obs
                 is_new = action_timestamps > (curr_time + exec_config.action_exec_latency)
 
                 # Record staleness diagnostics
@@ -348,8 +385,10 @@ def run_rollout(
                     diag['drain_at_steps'].append(t)
                     diag['n_fresh'].append(int(np.sum(is_new)))
                     diag['n_stale'].append(int(np.sum(~is_new)))
+                    diag['obs_age_at_drain_s'].append(float(obs_age_at_drain_s))
 
                 if np.any(is_new):
+                    consecutive_all_stale = 0
                     # Integrate the FULL chunk first (including stale frames) so
                     # absolute positions are consistent; then extract is_new slice.
                     _running_joints = curr_obs["joint_position"].copy()
@@ -383,19 +422,22 @@ def run_rollout(
                         for ts, a in zip(new_t, new_a)
                     ]
                 else:
-                    logging.warning("run_rollout: all actions stale at t=%d", t)
+                    consecutive_all_stale += 1
+                    logging.warning(
+                        "run_rollout: all actions stale at t=%d "
+                        "(consecutive=%d, infer_latency=%.3fs, horizon=%.3fs, "
+                        "obs_age=%.3fs, n_actions=%d)",
+                        t,
+                        consecutive_all_stale,
+                        infer_latency_s,
+                        len(new_actions) * dt_step,
+                        obs_age_at_drain_s,
+                        len(new_actions),
+                    )
                     if diag is not None:
                         diag['all_stale_steps'].append(t)
 
-            # ── 3. Trigger inference (aligned with execution_steps cadence) ─────
-            if t % exec_config.execution_steps == 0 and not inference_in_progress.is_set():
-                inference_in_progress.set()
-                threading.Thread(
-                    target=_run_inference,
-                    args=(curr_obs, obs_timestamp, t),
-                    daemon=True,
-                    name=f"Infer-t{t}",
-                ).start()
+            # ── 3. Inference runs continuously in _inference_worker ────────────
 
             # ── 4. Gripper execution (main thread, gevent-safe) ────────────────
             curr_time = time.time()
@@ -436,11 +478,13 @@ def run_rollout(
 
     finally:
         pbar.close()
+        inference_stop.set()
+        obs_buffer.close()
         try:
             env._robot.stop_trajectory_controller()
         except Exception:
             import traceback; traceback.print_exc()
-        inference_in_progress.wait(timeout=5.0)
+        inference_thread.join(timeout=5.0)
 
     if decision is None:
         decision = (False, "timeout")
@@ -473,6 +517,10 @@ def run_rollout(
             drain_at_steps  = _arr(diag['drain_at_steps']),   # (N_drained,)
             n_fresh         = _arr(diag['n_fresh']),           # (N_drained,) int
             n_stale         = _arr(diag['n_stale']),           # (N_drained,) int
+            infer_latency_s = _arr(diag['infer_latency_s']),   # (N_drained,) float
+            obs_age_at_submit_s = _arr(diag['obs_age_at_submit_s']),
+            obs_age_at_drain_s  = _arr(diag['obs_age_at_drain_s']),
+            result_queue_delay_s = _arr(diag['result_queue_delay_s']),
             all_stale_steps = _arr(diag['all_stale_steps']),  # (N_all_stale,)
             # Episode metadata
             success       = np.array(success),
