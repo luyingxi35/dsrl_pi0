@@ -3,11 +3,12 @@ export HF_ENDPOINT=https://hf-mirror.com
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 python3 examples/evaluate_policy_real.py \
---restore_path ./logs/DSRL_pi0_FrankaDroid/dsrl_pi0_real_dino_2026_06_09_21_46_52_0000--s-0 \
+--restore_path ./logs/DSRL_pi0_FrankaDroid/dsrl_pi0_real_dino_2026_06_09_20_17_55_0000--s-0 \
 --instruction "pick up the peg" \
 --eval_episodes 10 \
 --max_duration_s 60.0 \
 --control_frequency_hz 10 \
+--inference_frequency_hz 3 \
 --use_wrist_camera 1 \
 --use_exterior_camera 0 \
 --policy_host 127.0.0.1 \

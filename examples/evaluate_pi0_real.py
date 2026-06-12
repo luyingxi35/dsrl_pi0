@@ -7,6 +7,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import logging
+import math
 from pathlib import Path
 import queue
 import sys
@@ -48,8 +49,18 @@ RESULT_FIELDS = [
     "video_path", "timestamp", "instruction",
     "use_wrist_camera", "use_exterior_camera",
     "wrist_camera_id", "exterior_camera_id",
+    "control_frequency_hz", "inference_frequency_hz",
     "policy_host", "policy_port",
 ]
+
+
+def _inference_publish_period_steps(
+    control_frequency_hz: int,
+    inference_frequency_hz: float | None,
+) -> int:
+    if inference_frequency_hz is None:
+        return 1
+    return max(1, int(math.ceil(float(control_frequency_hz) / float(inference_frequency_hz))))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -152,6 +163,10 @@ def run_rollout(
 
     robot_config = robot_io.robot_config
     dt_step = 1.0 / robot_config.control_frequency_hz
+    inference_publish_period_steps = _inference_publish_period_steps(
+        robot_config.control_frequency_hz,
+        args.inference_frequency_hz,
+    )
 
     # ── Warm-up: trigger impedance controller on NUC ──────────────────────────
     # update_joints(blocking=False) starts DROID's impedance controller via the
@@ -297,7 +312,10 @@ def run_rollout(
                     (time.time() - obs_timestamp) * 1000,
                 )
 
-            obs_buffer.publish(curr_obs, obs_timestamp, t, time.time())
+            publish_inference = (t % inference_publish_period_steps) == 0
+            if publish_inference:
+                obs_buffer.publish(curr_obs, obs_timestamp, t, time.time())
+                _diag_infer_triggered = True
 
             # ── 2. Drain inference queue (keep most recent) ────────────────────
             latest_result = None
@@ -475,6 +493,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum scheduling lead time in seconds. Default: 0.01.")
     parser.add_argument("--control_frequency_hz", default=DEFAULT_CONTROL_FREQUENCY, type=int,
         help=f"Target DROID control frequency in Hz. Default: {DEFAULT_CONTROL_FREQUENCY}.")
+    parser.add_argument("--inference_frequency_hz", default=None, type=float,
+        help="Maximum observation publish rate for the async inference worker. "
+             "Default: every control tick.")
     parser.add_argument("--controller_frequency", default=200.0, type=float,
         help="High-frequency joint controller loop rate in Hz. Default: 200.")
     parser.add_argument("--action_scale", default=0.5, type=float,
@@ -511,6 +532,13 @@ def run_evaluation(args: argparse.Namespace) -> None:
         raise ValueError("--eval_episodes must be positive.")
     if args.execution_steps <= 0:
         raise ValueError("--execution_steps must be positive.")
+    if args.control_frequency_hz <= 0:
+        raise ValueError("--control_frequency_hz must be positive.")
+    if args.inference_frequency_hz is not None:
+        if args.inference_frequency_hz <= 0:
+            raise ValueError("--inference_frequency_hz must be positive.")
+        if args.inference_frequency_hz > args.control_frequency_hz:
+            raise ValueError("--inference_frequency_hz must be <= --control_frequency_hz.")
     if not args.use_wrist_camera and not args.use_exterior_camera:
         raise ValueError("At least one camera must be enabled.")
 
@@ -562,6 +590,20 @@ def run_evaluation(args: argparse.Namespace) -> None:
         robot_config.proprioceptive_latency, robot_config.gripper_obs_latency,
     )
     robot_config.validate()
+    inference_publish_period_steps = _inference_publish_period_steps(
+        robot_config.control_frequency_hz,
+        args.inference_frequency_hz,
+    )
+    effective_inference_frequency_hz = (
+        robot_config.control_frequency_hz / inference_publish_period_steps
+    )
+    logging.info(
+        "Loop rates: control=%dHz inference_publish=%.3fHz (every %d control step%s)",
+        robot_config.control_frequency_hz,
+        effective_inference_frequency_hz,
+        inference_publish_period_steps,
+        "" if inference_publish_period_steps == 1 else "s",
+    )
 
     policy_service = PolicyService(PolicyServerConfig(host=args.policy_host, port=args.policy_port))
     policy_service.preflight()
@@ -624,6 +666,10 @@ def run_evaluation(args: argparse.Namespace) -> None:
                 "use_exterior_camera": int(args.use_exterior_camera),
                 "wrist_camera_id": DEFAULT_WRIST_CAMERA_ID if args.use_wrist_camera else "",
                 "exterior_camera_id": DEFAULT_EXTERIOR_CAMERA_ID if args.use_exterior_camera else "",
+                "control_frequency_hz": args.control_frequency_hz,
+                "inference_frequency_hz": (
+                    "" if args.inference_frequency_hz is None else args.inference_frequency_hz
+                ),
                 "policy_host": args.policy_host,
                 "policy_port": args.policy_port,
             }

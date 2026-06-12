@@ -9,6 +9,9 @@ Reads a .npz file produced by DiagnosticLogger and generates six figures:
   Fig 5: Action continuity across chunk boundaries
   Fig 6: Gripper command timeline
 
+Also supports the older evaluate_policy_real.py diagnostic schema, which uses
+obs_timestamps / joint_positions / exec_timestamps instead of t_tick.
+
 Usage:
     cd ~/yingxi/dsrl_pi0
     conda activate dsrl_pi0   # needs matplotlib, numpy
@@ -41,6 +44,7 @@ except ImportError:
     sys.exit(1)
 
 from examples.tests.diagnostic_logger import DiagnosticLogger
+from examples.tests.visualize_eval_dino import plot_episode as plot_eval_dino_episode
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -372,6 +376,21 @@ Example:
 
     print(f"Loading {npz_path} ...")
     data = DiagnosticLogger.load(npz_path)
+
+    if "t_tick" not in data:
+        if {"obs_timestamps", "joint_positions"}.issubset(data):
+            print("  detected evaluate_policy_real.py diagnostic schema")
+            plot_eval_dino_episode(data, str(out_path))
+            return
+
+        keys = ", ".join(sorted(data.keys()))
+        print(
+            "ERROR: unsupported diagnostic .npz schema. Expected either "
+            "DiagnosticLogger keys including 't_tick', or evaluate_policy_real.py "
+            "keys including 'obs_timestamps' and 'joint_positions'.\n"
+            f"Available keys: {keys}"
+        )
+        sys.exit(1)
 
     n_ticks = len(data["t_tick"])
     t0      = float(data["t_tick"][0])
