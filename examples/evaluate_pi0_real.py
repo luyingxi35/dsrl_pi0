@@ -29,6 +29,7 @@ from utils.real_robot_common import (
     HumanEvalUI,
     binarize_and_clip_action,
     action_timestamps_from_obs,
+    integrate_joint_velocity_actions,
     LatestObservationBuffer,
     extract_observation_eval,
     get_pi0_input_eval,
@@ -196,8 +197,14 @@ def run_rollout(
             try:
                 request_data = get_pi0_input_eval(snapshot.obs, args.instruction)
                 response = policy_service.infer(request_data)
+                actions = np.asarray(response["actions"])
+                abs_positions = integrate_joint_velocity_actions(
+                    snapshot.obs["joint_position"], actions, _MAX_JOINT_DELTA
+                )
                 inference_queue.put({
-                    'actions': np.asarray(response["actions"]),
+                    'actions': actions,
+                    'abs_positions': abs_positions,
+                    'source_joint_position': np.asarray(snapshot.obs["joint_position"]),
                     't_obs': snapshot.t_obs,
                     't_step': snapshot.step_id,
                     't_publish': snapshot.t_publish,
@@ -220,6 +227,8 @@ def run_rollout(
     decision: tuple[bool, str] | None = None
     env_steps = 0
     consecutive_all_stale = 0
+    _DROID_MAX_JOINT_DELTA = 0.2
+    _MAX_JOINT_DELTA = _DROID_MAX_JOINT_DELTA * exec_config.action_scale
 
     inference_thread = threading.Thread(
         target=_inference_worker,
@@ -301,6 +310,7 @@ def run_rollout(
             if latest_result is not None:
                 _diag_infer_recv = True
                 new_actions = latest_result['actions']
+                abs_positions = latest_result['abs_positions']
                 t_obs = latest_result['t_obs']
                 _diag_infer_source_step = latest_result['t_step']
                 t_submit = latest_result['t_submit']
@@ -317,31 +327,10 @@ def run_rollout(
                 _diag_n_stale    = int(np.sum(~is_new))
                 if np.any(is_new):
                     consecutive_all_stale = 0
-                    # ── Arm: integrate joint_velocity → absolute joint angles ──────
-                    # pi0 outputs normalized joint velocities in [-1, 1]:
-                    #   delta_k = clip(v_k, -1, 1) * MAX_JOINT_DELTA  (rad/step)
-                    #   pos_k   = curr_joints + sum(delta_0 .. delta_k)
-                    # MAX_JOINT_DELTA = DROID training constant (0.2) * action_scale.
-                    # Source: droid/robot_ik/robot_ik_solver.py, relative_max_joint_delta
-                    _DROID_MAX_JOINT_DELTA = 0.2
-                    _MAX_JOINT_DELTA = _DROID_MAX_JOINT_DELTA * exec_config.action_scale
-
-                    # Step 1: Integrate the FULL chunk starting from the t_obs joint
-                    # state (curr_obs["joint_position"] is already interpolated to
-                    # t_obs by StateInterpolator.query_joints). Integrating all N
-                    # actions before filtering ensures stale velocities v_0..v_{K-1}
-                    # are accumulated; skipping them shifts every target position.
-                    _running_joints = curr_obs["joint_position"].copy()
-                    _all_abs: list[np.ndarray] = []
-                    for _a in new_actions:          # full chunk, including stale actions
-                        _vel = np.clip(_a[:-1], -1.0, 1.0)
-                        _running_joints = _running_joints + _vel * _MAX_JOINT_DELTA
-                        _all_abs.append(_running_joints.copy())
-                    _all_abs_arr = np.array(_all_abs)   # (N_total, 7) radians
-
-                    # Step 2: Apply is_new filter and execution_steps cap AFTER
-                    # integration so we extract the correct absolute positions.
-                    arm_positions = _all_abs_arr[is_new][: exec_config.execution_steps]  # (N_sched, 7)
+                    # The worker already integrated the full action chunk from
+                    # the source observation joint state. Apply stale filtering
+                    # only after that so fresh suffix positions stay consistent.
+                    arm_positions = abs_positions[is_new][: exec_config.execution_steps]  # (N_sched, 7)
                     new_t = action_timestamps[is_new][: exec_config.execution_steps]
                     new_a = new_actions[is_new][: exec_config.execution_steps]            # for gripper
                     _diag_n_scheduled = len(new_t)

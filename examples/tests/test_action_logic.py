@@ -27,6 +27,7 @@ from examples.utils.real_robot_common import (
     LatestObservationBuffer,
     action_timestamps_from_obs,
     binarize_and_clip_action,
+    integrate_joint_velocity_actions,
 )
 
 
@@ -203,6 +204,51 @@ def test_velocity_integration_cumulative() -> None:
     print("  [PASS] cumulative integration (integrate all, then take is_new slice)")
 
 
+def test_worker_side_integration_uses_source_joint_position() -> None:
+    """Worker-side integration must use source obs joints, not drain-time joints."""
+    source_joint = np.array([1.0, -1.0, 0.5, -0.5, 0.25, -0.25, 0.0])
+    current_joint_at_drain = source_joint + 10.0
+    max_joint_delta = 0.2
+    actions = np.array([
+        [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [-1.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    ])
+
+    abs_positions = integrate_joint_velocity_actions(
+        source_joint, actions, max_joint_delta
+    )
+    wrong_positions = integrate_joint_velocity_actions(
+        current_joint_at_drain, actions, max_joint_delta
+    )
+
+    expected = np.array([
+        source_joint + [0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        source_joint + [0.4, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0],
+        source_joint + [0.2, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0],
+    ])
+
+    assert np.allclose(abs_positions, expected)
+    assert not np.allclose(abs_positions, wrong_positions)
+    print("  [PASS] worker-side integration uses source joint position")
+
+
+def test_filter_uses_worker_integrated_absolute_suffix() -> None:
+    """Fresh filtering should select positions from the full integrated chunk."""
+    source_joint = np.zeros(7)
+    max_joint_delta = 0.2
+    actions = np.array([[1.0] + [0.0] * 7] * 4)
+    is_new = np.array([False, False, True, True])
+
+    abs_positions = integrate_joint_velocity_actions(
+        source_joint, actions, max_joint_delta
+    )
+    scheduled = abs_positions[is_new]
+
+    assert np.allclose(scheduled[:, 0], [0.6, 0.8])
+    print("  [PASS] fresh filter selects worker-integrated absolute suffix")
+
+
 # ── velocity clipping ─────────────────────────────────────────────────────────
 
 def test_velocity_integration_integrate_all_then_filter() -> None:
@@ -320,6 +366,8 @@ if __name__ == "__main__":
     test_velocity_integration_basic()
     test_velocity_integration_full_speed()
     test_velocity_integration_cumulative()
+    test_worker_side_integration_uses_source_joint_position()
+    test_filter_uses_worker_integrated_absolute_suffix()
     test_velocity_integration_integrate_all_then_filter()
     test_velocity_clipping()
     test_binarize_gripper_open()
