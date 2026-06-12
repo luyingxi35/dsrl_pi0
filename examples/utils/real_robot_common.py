@@ -580,6 +580,35 @@ def action_timestamps_from_obs(t_obs: float, n_actions: int, dt_step: float) -> 
     return float(t_obs) + np.arange(1, int(n_actions) + 1, dtype=np.float64) * float(dt_step)
 
 
+def integrate_joint_velocity_actions(
+    source_joint_position: np.ndarray,
+    actions: np.ndarray,
+    max_joint_delta: float,
+) -> np.ndarray:
+    """Integrate a pi0 joint-velocity chunk into absolute joint positions.
+
+    Args:
+        source_joint_position: 7-dof joint state aligned with the observation
+            that produced ``actions``.
+        actions: ``(horizon, 8)`` pi0 chunk. First 7 dims are normalized joint
+            velocities; the last dim is gripper.
+        max_joint_delta: rad/control-step scale after action_scale is applied.
+
+    Returns:
+        ``(horizon, 7)`` absolute joint positions. The full chunk is integrated
+        before any stale-action filtering so later fresh positions include the
+        stale prefix deltas.
+    """
+    running_joints = np.asarray(source_joint_position, dtype=np.float64).copy()
+    actions_arr = np.asarray(actions, dtype=np.float64)
+    abs_positions: list[np.ndarray] = []
+    for action in actions_arr:
+        velocity = np.clip(action[:7], -1.0, 1.0)
+        running_joints = running_joints + velocity * float(max_joint_delta)
+        abs_positions.append(running_joints.copy())
+    return np.asarray(abs_positions, dtype=np.float64)
+
+
 @dataclasses.dataclass(frozen=True)
 class ObservationSnapshot:
     """Latest observation package consumed by continuous inference workers."""

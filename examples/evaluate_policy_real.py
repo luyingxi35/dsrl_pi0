@@ -41,6 +41,7 @@ from utils.real_robot_common import (
     HumanEvalUI,
     binarize_and_clip_action,
     action_timestamps_from_obs,
+    integrate_joint_velocity_actions,
     LatestObservationBuffer,
     extract_observation_eval,
     get_pi0_input_eval,
@@ -224,6 +225,7 @@ def run_rollout(
         diag = dict(
             joint_positions=[], gripper_positions=[], obs_timestamps=[],
             infer_steps=[], rl_noises=[], pi0_chunks=[],
+            source_joint_positions=[],
             exec_positions=[], exec_timestamps=[],
             # Staleness: per inference result that was drained from the queue
             drain_at_steps=[],    # control step t when result was drained
@@ -266,9 +268,15 @@ def run_rollout(
                 _, noise = make_full_horizon_noise(actions_noise, agent.action_chunk_shape)
                 # 5. Pi0 server denoises with RL noise → joint-velocity action chunk
                 response = policy_service.infer(request_data, noise=np.asarray(noise))
+                actions = np.asarray(response["actions"])
+                abs_positions = integrate_joint_velocity_actions(
+                    snapshot.obs["joint_position"], actions, _MAX_JOINT_DELTA
+                )
                 t_done = time.time()
                 inference_queue.put({
-                    'actions':     np.asarray(response["actions"]),
+                    'actions':     actions,
+                    'abs_positions': abs_positions,
+                    'source_joint_position': np.asarray(snapshot.obs["joint_position"]),
                     't_obs':       snapshot.t_obs,
                     't_step':      snapshot.step_id,
                     't_publish':   snapshot.t_publish,
@@ -276,7 +284,7 @@ def run_rollout(
                     't_done':      t_done,
                     'obs_age_at_submit': obs_age_at_submit,
                     'rl_noise':    np.asarray(actions_noise),
-                    'pi0_actions': np.asarray(response["actions"]),
+                    'pi0_actions': actions,
                 })
             except Exception:
                 logging.exception("run_rollout: inference failed in background worker")
@@ -362,6 +370,7 @@ def run_rollout(
 
             if latest_result is not None:
                 new_actions = latest_result['actions']
+                abs_positions = latest_result['abs_positions']
                 t_obs       = latest_result['t_obs']
                 infer_latency_s = latest_result['t_done'] - latest_result['t_submit']
                 result_queue_delay_s = time.time() - latest_result['t_done']
@@ -371,6 +380,7 @@ def run_rollout(
                     diag['infer_steps'].append(latest_result['t_step'])
                     diag['rl_noises'].append(latest_result['rl_noise'])
                     diag['pi0_chunks'].append(latest_result['pi0_actions'])
+                    diag['source_joint_positions'].append(latest_result['source_joint_position'])
                     diag['infer_latency_s'].append(float(infer_latency_s))
                     diag['obs_age_at_submit_s'].append(float(obs_age_at_submit_s))
                     diag['result_queue_delay_s'].append(float(result_queue_delay_s))
@@ -389,17 +399,7 @@ def run_rollout(
 
                 if np.any(is_new):
                     consecutive_all_stale = 0
-                    # Integrate the FULL chunk first (including stale frames) so
-                    # absolute positions are consistent; then extract is_new slice.
-                    _running_joints = curr_obs["joint_position"].copy()
-                    _all_abs: list[np.ndarray] = []
-                    for _a in new_actions:
-                        _vel = np.clip(_a[:-1], -1.0, 1.0)
-                        _running_joints = _running_joints + _vel * _MAX_JOINT_DELTA
-                        _all_abs.append(_running_joints.copy())
-                    _all_abs_arr = np.array(_all_abs)   # (N_total, 7)
-
-                    arm_positions = _all_abs_arr[is_new][: exec_config.execution_steps]
+                    arm_positions = abs_positions[is_new][: exec_config.execution_steps]
                     new_t = action_timestamps[is_new][: exec_config.execution_steps]
                     new_a = new_actions[is_new][: exec_config.execution_steps]
 
@@ -510,6 +510,7 @@ def run_rollout(
             infer_steps  = _arr(diag['infer_steps']),    # (N_infer,)
             rl_noises    = _arr(diag['rl_noises']),      # (N_infer, horizon, noise_dim)
             pi0_chunks   = _arr(diag['pi0_chunks']),     # (N_infer, horizon, 32)
+            source_joint_positions = _arr(diag['source_joint_positions']),  # (N_infer, 7)
             # Per waypoint sent to robot
             exec_positions  = _arr(diag['exec_positions']),   # (N_exec, 7)
             exec_timestamps = _arr(diag['exec_timestamps']),  # (N_exec,)
