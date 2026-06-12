@@ -174,6 +174,7 @@ python3 examples/evaluate_policy_real.py \
 --query_freq 8 \
 --resize_image 128 \
 --control_frequency_hz 15 \
+--inference_frequency_hz 5 \
 --use_wrist_camera 1 \
 --use_exterior_camera 1 \
 --policy_host <GPU_SERVER_IP_OR_127.0.0.1> \
@@ -186,6 +187,8 @@ python3 examples/evaluate_policy_real.py \
 --action_magnitude 2.0
 ```
 The evaluator opens a Tkinter GUI with live wrist and exterior-camera previews. Camera serial IDs are hardcoded in the evaluator (`17396664` for Zed Mini wrist, `241122302552` for RealSense exterior); the command only chooses whether each camera is used. Click `Start next` to begin each rollout, click `Success` or `Failure` to label the trajectory, or let the rollout timeout to mark it as failure automatically. Each labeled rollout triggers `env.reset()` and then waits for the next `Start next`. Results are written to `eval_results.csv`, and videos are saved as `eval_video_<episode_id>.mp4` in `--outputdir`.
+
+`--control_frequency_hz` controls the main rollout loop and action timestamp spacing. `--inference_frequency_hz` throttles how often a fresh observation is submitted to the async inference worker, without lowering the control loop, GUI updates, queue draining, or gripper scheduling. If it is omitted, inference is submitted every control tick. The effective inference rate is quantized to control ticks and never exceeds the requested value; for example, `--control_frequency_hz 10 --inference_frequency_hz 3` submits every 4 control steps, i.e. 2.5 Hz. `--execution_steps` only limits how many fresh actions from each returned chunk are scheduled; it does not set the inference rate.
 
 To evaluate the pi0 policy alone with wrist-camera observations only, keep the NUC and GPU server commands above running and use:
 ```
@@ -200,6 +203,7 @@ python3 examples/evaluate_pi0_real.py \
 --action_scale 0.5 \
 --chunk_transition_time 0.2 \
 --control_frequency_hz 10 \
+--inference_frequency_hz 5 \
 --controller_frequency 200 \
 --use_wrist_camera 1 \
 --use_exterior_camera 0 \
