@@ -91,6 +91,7 @@ python3 examples/evaluate_pi0_real.py \
     --action_scale 0.5 \
     --execution_steps 8 \
     --control_frequency_hz 10 \
+    --max_joint_speed_rad_s 0.3 \
     --inference_frequency_hz 5
     --use_wrist_camera 1 \
     --policy_host 127.0.0.1 --policy_port 8000 \

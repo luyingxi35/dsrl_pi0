@@ -3,7 +3,7 @@ export HF_ENDPOINT=https://hf-mirror.com
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 python3 examples/evaluate_policy_real.py \
---restore_path ./logs/DSRL_pi0_FrankaDroid/dsrl_pi0_real_dino_2026_06_09_20_17_55_0000--s-0 \
+--restore_path ./logs/DSRL_pi0_FrankaDroid/dsrl_pi0_real_dino_2026_06_13_15_37_49_0000--s-0 \
 --instruction "pick up the peg" \
 --eval_episodes 10 \
 --max_duration_s 60.0 \
