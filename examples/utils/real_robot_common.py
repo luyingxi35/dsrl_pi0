@@ -42,6 +42,8 @@ class RobotRuntimeConfig:
     wrist_camera_id: str
     max_timesteps: int
     control_frequency_hz: int = 10
+    use_wrist_camera: bool = True
+    use_exterior_camera: bool = True
     allow_missing_cameras: bool = False
     # ── Camera / proprioception latencies — align with EvalRobotConfig ──────────
     wrist_camera_obs_latency:  float = 0.084     # seconds: wrist camera frame age at read_end
@@ -50,6 +52,7 @@ class RobotRuntimeConfig:
     # ── Action execution — align with ExecutionConfig ────────────────────────────
     robot_action_latency:      float = 0.20      # seconds: arm command → physical response
     gripper_action_latency:    float = 0.15      # seconds: gripper command → physical response
+    action_exec_latency:       float = 0.0       # seconds: stale-action scheduling margin
     action_scale:              float = 0.5       # max_joint_delta = 0.2 * action_scale rad/step
     controller_frequency:      float = 200.0     # Hz: HighFreqController loop rate
     max_joint_speed_rad_s:     float = 0.5       # rad/s: NUC-side speed cap (conservative default)
@@ -59,22 +62,39 @@ class RobotRuntimeConfig:
         return self.external_camera
 
     def validate(self) -> None:
-        camera_ids = {
-            "left_camera_id": self.left_camera_id,
-            "right_camera_id": self.right_camera_id,
-            "wrist_camera_id": self.wrist_camera_id,
-        }
-        missing = [name for name, value in camera_ids.items() if not value]
-        if missing and not (self.allow_missing_cameras and any(camera_ids.values())):
+        if self.external_camera not in {"left", "right"}:
+            raise ValueError(f"external_camera must be 'left' or 'right', got {self.external_camera!r}.")
+        if not self.use_wrist_camera and not self.use_exterior_camera:
+            raise ValueError("At least one of use_wrist_camera or use_exterior_camera must be enabled.")
+
+        selected_camera_ids = {}
+        if self.use_wrist_camera:
+            selected_camera_ids["wrist_camera_id"] = self.wrist_camera_id
+        if self.use_exterior_camera:
+            external_id_name = f"{self.external_camera}_camera_id"
+            selected_camera_ids[external_id_name] = getattr(self, external_id_name)
+
+        missing = [name for name, value in selected_camera_ids.items() if not value]
+        if missing:
             raise ValueError(
                 "DROID camera IDs must be set before running real rollouts. "
                 f"Missing: {', '.join(missing)}."
             )
-        if self.wrist_camera_id and self.wrist_camera_id in {
-            self.left_camera_id, self.right_camera_id
-        }:
+
+        exterior_camera_id = (
+            getattr(self, f"{self.external_camera}_camera_id")
+            if self.use_exterior_camera else ""
+        )
+        if (
+            self.use_wrist_camera
+            and self.use_exterior_camera
+            and self.wrist_camera_id
+            and self.wrist_camera_id == exterior_camera_id
+        ):
             raise ValueError(
-                f"The wrist camera must be different from the external camera IDs: {camera_ids}"
+                "The wrist camera must be different from the selected exterior camera: "
+                f"wrist_camera_id={self.wrist_camera_id!r}, "
+                f"{self.external_camera}_camera_id={exterior_camera_id!r}."
             )
 
 
@@ -132,11 +152,14 @@ class RobotIO:
     def preflight(self):
         obs = self._env.get_observation()
         image_observations = obs["image"]
-        required_cameras = [
-            (self._runtime_config.left_camera_id, "left external"),
-            (self._runtime_config.right_camera_id, "right external"),
-            (self._runtime_config.wrist_camera_id, "wrist"),
-        ]
+        required_cameras = []
+        if self._runtime_config.use_wrist_camera:
+            required_cameras.append((self._runtime_config.wrist_camera_id, "wrist"))
+        if self._runtime_config.use_exterior_camera:
+            required_cameras.append((
+                getattr(self._runtime_config, f"{self._runtime_config.external_camera}_camera_id"),
+                f"{self._runtime_config.external_camera} external",
+            ))
         missing = [
             label
             for cam_id, label in required_cameras
@@ -326,22 +349,31 @@ def extract_observation_train(
     right_image = _find_camera_image(image_observations, robot_config.right_camera_id)
     wrist_image = _find_camera_image(image_observations, robot_config.wrist_camera_id)
 
-    missing = [
-        name
-        for name, img in (("left_image", left_image), ("right_image", right_image), ("wrist_image", wrist_image))
-        if img is None
-    ]
-    allow_missing = getattr(robot_config, "allow_missing_cameras", False)
-    if missing and not allow_missing:
-        raise RuntimeError(
-            "Missing DROID camera images: "
-            + ", ".join(missing)
-            + f". Available: {sorted(image_observations.keys())}."
-        )
-
     left_image_present = left_image is not None
     right_image_present = right_image is not None
     wrist_image_present = wrist_image is not None
+
+    if getattr(robot_config, "use_wrist_camera", True) and not wrist_image_present:
+        raise RuntimeError(
+            f"Missing DROID wrist camera image for {robot_config.wrist_camera_id}. "
+            f"Available: {sorted(image_observations.keys())}."
+        )
+
+    external_image_key = robot_config.camera_to_use + "_image"
+    external_present = {
+        "left_image": left_image_present,
+        "right_image": right_image_present,
+    }[external_image_key]
+    if (
+        getattr(robot_config, "use_exterior_camera", True)
+        and not external_present
+        and not getattr(robot_config, "allow_missing_cameras", False)
+    ):
+        external_camera_id = getattr(robot_config, f"{robot_config.camera_to_use}_camera_id")
+        raise RuntimeError(
+            f"Missing DROID {robot_config.camera_to_use} exterior camera image "
+            f"for {external_camera_id}. Available: {sorted(image_observations.keys())}."
+        )
 
     left_image = _to_rgb_image(left_image) if left_image_present else None
     right_image = _to_rgb_image(right_image) if right_image_present else None

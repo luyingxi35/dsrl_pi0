@@ -112,6 +112,8 @@ def main(variant):
         wrist_camera_id=variant.wrist_camera_id,
         max_timesteps=variant.max_rollout_steps,
         control_frequency_hz=variant.control_frequency_hz,
+        use_wrist_camera=bool(getattr(variant, "use_wrist_camera", True)),
+        use_exterior_camera=bool(getattr(variant, "use_exterior_camera", True)),
         action_scale=variant.action_scale,
         max_joint_speed_rad_s=variant.max_joint_speed_rad_s,
         robot_action_latency=variant.robot_action_latency,
