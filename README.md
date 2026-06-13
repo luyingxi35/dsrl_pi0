@@ -175,6 +175,7 @@ python3 examples/evaluate_policy_real.py \
 --resize_image 128 \
 --control_frequency_hz 15 \
 --inference_frequency_hz 5 \
+--max_joint_speed_rad_s 0.5 \
 --use_wrist_camera 1 \
 --use_exterior_camera 1 \
 --policy_host <GPU_SERVER_IP_OR_127.0.0.1> \
@@ -201,10 +202,10 @@ python3 examples/evaluate_pi0_real.py \
 --max_duration_s 60 \
 --execution_steps 8 \
 --action_scale 0.5 \
---chunk_transition_time 0.2 \
 --control_frequency_hz 10 \
---inference_frequency_hz 5 \
+--inference_frequency_hz 3 \
 --controller_frequency 200 \
+--max_joint_speed_rad_s 0.5 \
 --use_wrist_camera 1 \
 --use_exterior_camera 0 \
 --policy_host 127.0.0.1 \
@@ -217,6 +218,8 @@ This pi0-only evaluator does not load a DSRL checkpoint or send RL noise. With `
 --use_exterior_camera 1
 ```
 For exterior-only evaluation, use `--use_wrist_camera 0 --use_exterior_camera 1`. In all cases, only enabled real cameras are sent to OpenPI: RealSense exterior maps to `observation/exterior_image_1_left`, Zed wrist maps to `observation/wrist_image_left`, and absent DROID image slots remain masked out. Restart the OpenPI policy server after updating this repository so the empty-slot transform is loaded.
+
+Both evaluators accept `--max_joint_speed_rad_s` and pass it to the NUC-side `add_waypoints` safety cap. Keep it conservative for first validation; increase it only when the commanded motion should not be slowed by the NUC cap.
 
 ## Test
 1. Test observation:

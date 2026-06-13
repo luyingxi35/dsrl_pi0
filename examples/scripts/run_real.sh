@@ -28,8 +28,8 @@ POLICY_PORT="8000"
 # max_joint_speed_rad_s: NUC-side safety cap. 0.1 is very conservative; increase to
 #   1.5 for normal training speed. Match action_scale: e.g. action_scale=0.5 with
 #   max_joint_speed_rad_s=1.5 allows up to 1.0 rad/step at 10 Hz without capping.
-ACTION_SCALE="0.5"
-MAX_JOINT_SPEED="0.1"
+ACTION_SCALE="1.0"
+MAX_JOINT_SPEED="0.3"
 
 
 python3 examples/launch_train_real.py \
@@ -43,7 +43,7 @@ python3 examples/launch_train_real.py \
 --max_steps 500000  \
 --eval_interval 2000 \
 --log_interval 100 \
---multi_grad_step 30 \
+--multi_grad_step 20 \
 --resize_image 128 \
 --action_magnitude 2.5 \
 --query_freq 10 \
