@@ -16,6 +16,9 @@ from jaxrl2.utils.noise_utils import make_full_horizon_noise
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+EXAMPLES_DIR = Path(__file__).resolve().parent
+if str(EXAMPLES_DIR) not in sys.path:
+    sys.path.insert(0, str(EXAMPLES_DIR))
 
 from utils.real_robot_common import (
     HumanEvalUI,
@@ -27,6 +30,7 @@ from utils.real_robot_common import (
 )
 
 EMPTY_IMAGE_SHAPE = (224, 224, 3)
+get_pi0_input = get_pi0_input_train
 
 
 def trajwise_alternating_training_loop(variant, agent, env, eval_env, online_replay_buffer, replay_buffer, wandb_logger,

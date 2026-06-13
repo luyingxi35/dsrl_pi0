@@ -172,24 +172,25 @@ python3 examples/evaluate_policy_real.py \
 --eval_episodes 10 \
 --max_rollout_steps 200 \
 --query_freq 8 \
---resize_image 128 \
---control_frequency_hz 15 \
---inference_frequency_hz 5 \
+--control_frequency_hz 10 \
+--external_camera right \
 --max_joint_speed_rad_s 0.5 \
 --use_wrist_camera 1 \
---use_exterior_camera 1 \
+--use_exterior_camera 0 \
+--left_camera_id "" \
+--right_camera_id "" \
+--wrist_camera_id 17396664 \
 --policy_host <GPU_SERVER_IP_OR_127.0.0.1> \
 --policy_port 8000 \
 --outputdir ./logs/policy_eval_real \
 --seed 0 \
---add_states 1 \
 --hidden_dims 1024 \
---num_qs 2 \
---action_magnitude 2.0
+--network_type transformer \
+--rl_noise_horizon 8
 ```
-The evaluator opens a Tkinter GUI with live wrist and exterior-camera previews. Camera serial IDs are hardcoded in the evaluator (`17396664` for Zed Mini wrist, `241122302552` for RealSense exterior); the command only chooses whether each camera is used. Click `Start next` to begin each rollout, click `Success` or `Failure` to label the trajectory, or let the rollout timeout to mark it as failure automatically. Each labeled rollout triggers `env.reset()` and then waits for the next `Start next`. Results are written to `eval_results.csv`, and videos are saved as `eval_video_<episode_id>.mp4` in `--outputdir`.
+The evaluator opens a Tkinter GUI with live wrist and selected exterior-camera previews. Click `Start next` to begin each rollout, click `Success` or `Failure` to label the trajectory, or let the rollout timeout to mark it as failure automatically. Each labeled rollout triggers `env.reset()` and then waits for the next `Start next`. Results are written to `eval_results.csv`, and videos are saved as `eval_video_<episode_id>.mp4` in `--outputdir`.
 
-`--control_frequency_hz` controls the main rollout loop and action timestamp spacing. `--inference_frequency_hz` throttles how often a fresh observation is submitted to the async inference worker, without lowering the control loop, GUI updates, queue draining, or gripper scheduling. If it is omitted, inference is submitted every control tick. The effective inference rate is quantized to control ticks and never exceeds the requested value; for example, `--control_frequency_hz 10 --inference_frequency_hz 3` submits every 4 control steps, i.e. 2.5 Hz. `--execution_steps` only limits how many fresh actions from each returned chunk are scheduled; it does not set the inference rate.
+`--control_frequency_hz` controls the main rollout loop and action timestamp spacing. DSRL eval uses train-aligned synchronous inference: every `--query_freq` control steps it builds the DSRL state, predicts RL noise, calls the pi0 server, integrates the returned chunk, and schedules at most `query_freq` targets. With the default `--control_frequency_hz 10 --query_freq 8`, DSRL/pi0 inference runs about every 0.8 seconds. `--inference_frequency_hz` is intentionally not supported by the DSRL evaluator.
 
 To evaluate the pi0 policy alone with wrist-camera observations only, keep the NUC and GPU server commands above running and use:
 ```
