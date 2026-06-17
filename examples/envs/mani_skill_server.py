@@ -156,6 +156,7 @@ env = gym.make(
     render_mode="rgb_array",
     num_envs=1,
     robot_uids="panda_wristcam",
+    sensor_configs=dict(width=224, height=224),
 )
 
 

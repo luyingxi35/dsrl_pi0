@@ -172,8 +172,8 @@ def _obs_to_pi0_input(qpos: np.ndarray, ext_rgb: np.ndarray,
       exterior (base_camera)  -> observation/exterior_image_1_left
       wrist    (hand_camera)  -> observation/wrist_image_left  (real image!)
     """
-    ext_224   = image_tools.convert_to_uint8(image_tools.resize_with_pad(ext_rgb,   224, 224))
-    wrist_224 = image_tools.convert_to_uint8(image_tools.resize_with_pad(wrist_rgb, 224, 224))
+    ext_224   = image_tools.convert_to_uint8(ext_rgb)
+    wrist_224 = image_tools.convert_to_uint8(wrist_rgb)
     return {
         "observation/exterior_image_1_left": ext_224,
         "observation/wrist_image_left":      wrist_224,

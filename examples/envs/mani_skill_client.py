@@ -24,7 +24,7 @@ import numpy as np
 from gym.spaces import Box, Dict
 
 _SERVER_SCRIPT = str(pathlib.Path(__file__).parent / "mani_skill_server.py")
-_CAM_SHAPE     = (128, 128, 3)
+_CAM_SHAPE     = (224, 224, 3)
 
 
 class ManiSkillRemoteEnv(gym.Env):
