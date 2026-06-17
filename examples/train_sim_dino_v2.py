@@ -107,7 +107,7 @@ def main(variant):
     if getattr(variant, "suffix", ""):
         expname += f"_{variant.suffix}"
 
-    outputdir = os.path.join(os.environ["EXP"], expname)
+    outputdir = os.path.abspath(os.path.join(os.environ["EXP"], expname))
     variant.outputdir = outputdir
     os.makedirs(outputdir, exist_ok=True)
     print(f"Writing outputs to: {outputdir}")
