@@ -172,7 +172,7 @@ while True:
         _send({"ok": True, "qpos": qpos, "ext": ext, "wrist": wrist})
 
     elif cmd == "step":
-        action = np.asarray(msg["action"], dtype=np.float32)   # (8,): 7 arm joints + 1 gripper
+        action = np.asarray(msg["action"], dtype=np.float32).reshape(1, -1)  # (1,8): batched for ManiSkill
         obs, reward, terminated, truncated, info = env.step(action)
         qpos, ext, wrist = _extract_obs(obs)
 
