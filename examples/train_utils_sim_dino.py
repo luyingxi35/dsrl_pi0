@@ -178,7 +178,7 @@ def _obs_to_pi0_input(qpos: np.ndarray, ext_rgb: np.ndarray,
         "observation/exterior_image_1_left": ext_224,
         "observation/wrist_image_left":      wrist_224,
         "observation/joint_position":        qpos[:7].astype(np.float32),
-        "observation/gripper_position":      np.array([np.mean(qpos[7:9])], dtype=np.float32),
+        "observation/gripper_position":      np.array([np.clip(np.mean(qpos[7:9]) / 0.04, 0.0, 1.0)], dtype=np.float32),  # normalize panda finger (0~0.04m) to DROID [0,1]
         "prompt":                            instruction,
     }
 
