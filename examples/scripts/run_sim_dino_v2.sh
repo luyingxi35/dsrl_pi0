@@ -98,7 +98,7 @@ python3 examples/plot_sim_dino_curve.py \
     --log_dir  "$EXP" \
     --output   "$EXP/sim_dino_v2_curve.png" \
     --stop_line 0.95 \
-    --title    "PegInsertionVertical v2 — DSRL (wrist-aligned, ${#SEEDS} seeds)"
+    --title    "PegInsertionVertical v2 — DSRL (wrist-aligned, $(echo $SEEDS | wc -w) seeds)"
 
 echo ""
 echo "=== Sweep complete ==="

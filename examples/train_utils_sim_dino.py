@@ -251,7 +251,7 @@ def collect_traj(variant, agent, env, i, agent_dp, obs_builder):
         env_steps = t + 1
 
         # Rule-based success check (has_peg_inserted)
-        if bool(info["success"].item()):
+        if bool(info["success"]):
             is_success     = True
             failure_reason = ""
             break
@@ -519,7 +519,7 @@ def _perform_eval(agent, env, i, variant, wandb_logger, agent_dp, obs_builder) -
             done          = bool(terminated) or bool(truncated)
             total_reward += float(reward) if reward is not None else 0.0
 
-            if bool(info["success"].item()):
+            if bool(info["success"]):
                 is_success = True
                 break
             if done:

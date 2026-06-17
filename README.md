@@ -52,6 +52,12 @@ pip install -e openpi/packages/openpi-client
 # install Libero
 pip install -e LIBERO
 pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu # needed for libero
+
+# install ManiSkill and sapien (needed for PegInsertionVertical sim)
+pip install mani-skill sapien
+pip install -e RoboFPE
+# DINOv2 weights are auto-downloaded by HuggingFace Transformers on first run;
+# set HF_ENDPOINT if needed (e.g. export HF_ENDPOINT=https://hf-mirror.com)
 ```
 
 ## Training (Simulation)
@@ -63,6 +69,67 @@ Aloha
 ```
 bash examples/scripts/run_aloha.sh
 ```
+### PegInsertionVertical Simulation — Wrist-DINO state (multi-seed sweep)
+
+This variant runs **DSRL on a simulated Franka peg-insertion task** with an observation
+space that is **architecturally identical to the real-robot Wrist-DINO setup**:
+
+```
+state = [ proprio (8-D) | pi0 VLM embed (2048-D) | DINOv2-small CLS (384-D) ] = 2440-D
+```
+
+- **Policy**: `pi0_droid` (local, `/opt/yingxi/pi0_droid`; DroidInputs format, action_horizon=8)
+- **Environment**: `PegInsertionVertical-v1` from [RoboFPE](https://github.com/luyingxi35/RoboFPE), running in an **isolated subprocess** (robofac conda env) to avoid ManiSkill/sapien dependency conflicts with the JAX training process
+- **Cameras**: 224×224 `base_camera` (exterior) + `hand_camera` (wrist, `panda_wristcam`); DINOv2 runs on the **wrist** image, mirroring `WristDinoObservationBuilder` in `run_real_dino.sh`
+- **RL agent**: StateSAC + Transformer — identical hyperparameters to `run_real_dino.sh`
+- **Success**: rule-based `has_peg_inserted()` geometry check, no human labelling needed
+
+**Multi-seed sweep with automatic early stopping and curve plotting:**
+```bash
+# Runs seeds 0 / 1 / 2 sequentially on a single GPU.
+# Every 1000 env steps: eval (10 episodes) + save checkpoint.
+# Stops each seed once success rate >= 95% for 2 consecutive evals.
+# Plots mean +/- std curve at the end.
+bash examples/scripts/run_sim_dino_v2.sh
+
+# Custom seeds:
+bash examples/scripts/run_sim_dino_v2.sh --seeds "0 1 2 3 4"
+```
+
+Output layout:
+```
+logs/DSRL_pi0_SimDinoV2/
+├── dsrl_pi0_sim_dino_v2_s0_<hash>/
+│   ├── checkpoint_<grad_step>   <- checkpoints at each eval milestone
+│   └── eval_curve.csv           <- columns: env_steps, success_rate
+├── dsrl_pi0_sim_dino_v2_s1_<hash>/  ...
+├── dsrl_pi0_sim_dino_v2_s2_<hash>/  ...
+└── sim_dino_v2_curve.png        <- aggregated mean +/- std curve
+```
+
+**Plot only** (re-plot from existing CSVs without re-running training):
+```bash
+python3 examples/plot_sim_dino_curve.py \
+    --log_dir  ./logs/DSRL_pi0_SimDinoV2 \
+    --output   ./logs/DSRL_pi0_SimDinoV2/sim_dino_v2_curve.png \
+    --stop_line 0.95 \
+    --title    "PegInsertionVertical v2 — DSRL (wrist-aligned)"
+```
+
+**Live curve during training** — each seed appends a row to `eval_curve.csv` after every eval, so you can re-run the plot command at any point during training to inspect progress.
+
+Key differences across training variants:
+
+| | `run_libero.sh` | `run_real_dino.sh` | `run_sim_dino_v2.sh` |
+|---|---|---|---|
+| Environment | LIBERO (MuJoCo) | Franka DROID (real) | PegInsertionVertical (ManiSkill, subprocess) |
+| SAC | PixelSAC + CNN | StateSAC + Transformer | StateSAC + Transformer |
+| Observation | 64x64 pixels | proprio+VLM+DINO (2440-D) | proprio+VLM+DINO (2440-D) |
+| Camera for DINOv2 | — | wrist (RealSense) | wrist (`hand_camera`, 224x224) |
+| pi0 inference | local | remote server | local |
+| Success signal | env reward | human GUI label | rule-based geometry |
+| Multi-seed sweep | — | — | `run_sim_dino_v2.sh` |
+
 ### Training Logs
 We provide sample W&B runs and logs: https://wandb.ai/mitsuhiko/DSRL_pi0_public
 
