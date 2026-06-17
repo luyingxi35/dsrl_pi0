@@ -86,14 +86,23 @@ state = [ proprio (8-D) | pi0 VLM embed (2048-D) | DINOv2-small CLS (384-D) ] = 
 
 **Multi-seed sweep with automatic early stopping and curve plotting:**
 ```bash
-# Runs seeds 0 / 1 / 2 sequentially on a single GPU.
+# Runs seeds 0 / 1 / 2 in PARALLEL, one seed per GPU (GPU 0 / 1 / 2).
 # Every 1000 env steps: eval (10 episodes) + save checkpoint.
 # Stops each seed once success rate >= 95% for 2 consecutive evals.
-# Plots mean +/- std curve at the end.
+# Plots mean +/- std curve after all seeds finish.
 bash examples/scripts/run_sim_dino_v2.sh
 
 # Custom seeds:
 bash examples/scripts/run_sim_dino_v2.sh --seeds "0 1 2 3 4"
+
+# Custom GPU assignment (e.g. use GPUs 4-6 instead of 0-2):
+bash examples/scripts/run_sim_dino_v2.sh --seeds "0 1 2" --gpus "4 5 6"
+```
+
+Each seed's stdout/stderr is redirected to `logs/DSRL_pi0_SimDinoV2/seed<N>_gpu<G>.log`.
+Monitor live progress with:
+```bash
+tail -f logs/DSRL_pi0_SimDinoV2/seed*.log
 ```
 
 Output layout:
