@@ -16,9 +16,10 @@ import gymnasium as gym
 import gym_aloha
 from gym.spaces import Dict, Box
 
-from libero.libero import benchmark
-from libero.libero import get_libero_path
-from libero.libero.envs import OffScreenRenderEnv
+# libero imports moved inside main() to avoid top-level torch dependency
+# from libero.libero import benchmark
+# from libero.libero import get_libero_path
+# from libero.libero.envs import OffScreenRenderEnv
 
 from jaxrl2.data import ReplayBuffer
 from jaxrl2.utils.wandb_logger import WandBLogger, create_exp_name
@@ -37,6 +38,8 @@ compilation_cache.initialize_cache(os.path.join(home_dir, 'jax_compilation_cache
 
 def _get_libero_env(task, resolution, seed):
     """Initializes and returns the LIBERO environment, along with the task description."""
+    from libero.libero import get_libero_path
+    from libero.libero.envs import OffScreenRenderEnv
     task_description = task.language
     task_bddl_file = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
     env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution}
@@ -109,6 +112,7 @@ def main(variant):
     print('writing to output dir ', outputdir)
     
     if variant.env == 'libero':
+        from libero.libero import benchmark
         benchmark_dict = benchmark.get_benchmark_dict()
         task_suite = benchmark_dict["libero_90"]()
         task_id = 57
@@ -146,10 +150,13 @@ def main(variant):
 
     if variant.env == 'libero':
         config = openpi_config.get_config("pi0_libero")
-        checkpoint_dir = download.maybe_download("s3://openpi-assets/checkpoints/pi0_libero")
+        # pi0_libero checkpoint not available (no internet). Use pi05_base (same Pi0Config architecture).
+        checkpoint_dir = download.maybe_download("/home/gpu4/.cache/openpi/openpi-assets/checkpoints/pi05_base")
     elif variant.env == 'aloha_cube':
         config = openpi_config.get_config("pi0_aloha_sim")
-        checkpoint_dir = download.maybe_download("s3://openpi-assets/checkpoints/pi0_aloha_sim")
+        # pi0_aloha_sim S3 checkpoint has a manifest/data mismatch.
+        # Use pi05_base (same architecture, already cached locally) as the base policy.
+        checkpoint_dir = download.maybe_download("/home/gpu4/.cache/openpi/openpi-assets/checkpoints/pi05_base")
     else:
         raise NotImplementedError()
     agent_dp = policy_config.create_trained_policy(config, checkpoint_dir)

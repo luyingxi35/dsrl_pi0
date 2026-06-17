@@ -6,15 +6,16 @@ export DISPLAY=:0
 export MUJOCO_GL=egl
 export MUJOCO_EGL_DEVICE_ID=$device_id
 
-export OPENPI_DATA_HOME=./openpi
+export OPENPI_DATA_HOME=/opt/yingxi
 export EXP=./logs/$proj_name; 
 export CUDA_VISIBLE_DEVICES=$device_id
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export LD_LIBRARY_PATH=/home/gpu4/miniconda3/envs/dsrl_pi0/lib/python3.11/site-packages/nvidia/cudnn/lib:/home/gpu4/miniconda3/envs/dsrl_pi0/lib/python3.11/site-packages/nvidia/cuda_runtime/lib:
 
 
 pip install mujoco==2.3.7
 
-python3 examples/launch_train_sim.py \
+python3 -m examples.launch_train_sim \
 --algorithm pixel_sac \
 --env aloha_cube \
 --prefix dsrl_pi0_aloha \
