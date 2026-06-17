@@ -54,6 +54,9 @@ export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 export EXP=./logs/$proj_name
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
+# HuggingFace: use cached weights offline; if re-download needed set TRANSFORMERS_OFFLINE=0
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
 
 ALL_NVIDIA=$(find /home/gpu4/miniconda3/envs/dsrl_pi0/lib/python3.11/site-packages/nvidia \
     -name 'lib' -type d 2>/dev/null | tr '\n' ':')
