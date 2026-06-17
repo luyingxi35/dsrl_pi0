@@ -37,7 +37,7 @@ class ManiSkillRemoteEnv(gym.Env):
 
     def __init__(
         self,
-        robofac_python: str = "/home/gpu4/miniconda3/envs/robofac/bin/python3",
+        robofac_python: str = "/opt/yingxi/envs/robofac/bin/python3",
         server_script:  str = _SERVER_SCRIPT,
     ):
         self._proc = subprocess.Popen(

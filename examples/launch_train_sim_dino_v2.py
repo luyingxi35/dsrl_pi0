@@ -49,7 +49,7 @@ if __name__ == "__main__":
 
     # ── Subprocess env ─────────────────────────────────────────────────────────
     parser.add_argument("--robofac_python",
-                        default="/home/gpu4/miniconda3/envs/robofac/bin/python3",
+                        default="/opt/yingxi/envs/robofac/bin/python3",
                         help="Path to robofac conda Python (runs ManiSkill server)")
 
     # ── Sweep / early-stop ─────────────────────────────────────────────────────
