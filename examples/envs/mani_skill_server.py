@@ -83,6 +83,8 @@ _se.parse_sim_and_render_backend = _patched_parse   # update already-imported re
 # Now safe to load the task and import gymnasium
 # ══════════════════════════════════════════════════════════════════════════════
 
+import argparse
+import json
 import numpy as np  # noqa: E402
 
 # ── Load the task directly, bypassing mani_envs/tasks/__init__.py ─────────────
@@ -95,6 +97,29 @@ sys.modules["peg_task"] = _mod
 _spec.loader.exec_module(_mod)   # registers PegInsertionVertical-v1 with gymnasium
 
 import gymnasium as gym   # noqa: E402 – must come after env registration
+
+# ── Workspace bounds (optional) ──────────────────────────────────────────────
+# Loaded from JSON produced by examples/calibrate_workspace.py via --workspace_bounds.
+# Uses parse_known_args so the server ignores any unknown flags.
+_ws_parser = argparse.ArgumentParser(add_help=False)
+_ws_parser.add_argument("--workspace_bounds", default=None)
+_ws_args, _ = _ws_parser.parse_known_args()
+
+_WORKSPACE_BOUNDS = None
+if _ws_args.workspace_bounds:
+    import sys as _sys
+    with open(_ws_args.workspace_bounds) as _f:
+        _b = json.load(_f)
+    _eff = _b["effective"]
+    _WORKSPACE_BOUNDS = {
+        "peg_lower":  np.array(_eff["peg_lower"],  dtype=np.float32),
+        "peg_upper":  np.array(_eff["peg_upper"],  dtype=np.float32),
+        "hole_lower": np.array(_eff["hole_lower"], dtype=np.float32),
+        "hole_upper": np.array(_eff["hole_upper"], dtype=np.float32),
+    }
+    print(f"[server] workspace bounds loaded from {_ws_args.workspace_bounds}",
+          file=_sys.stderr, flush=True)
+
 
 
 # ── I/O helpers ───────────────────────────────────────────────────────────────
@@ -153,6 +178,26 @@ def _pose_to_list(pose):
         pose = raw_pose
     return np.asarray(_to_numpy(pose), dtype=np.float32).reshape(-1, 7)[0].tolist()
 
+# ── Workspace constraint ────────────────────────────────────────────────
+
+_TABLE_TOP_Z     = 0.0
+_PEG_HALF_LENGTH = 0.105
+_LIFT_THRESHOLD  = 0.03   # peg lifted >= 3 cm above rest position -> post-grasp
+
+
+def _check_workspace(qpos: np.ndarray, peg_z: float, bounds) -> tuple:
+    # Returns (violated: bool, phase: str) where phase is pre_grasp or post_grasp.
+    if bounds is None:
+        return False, "pre_grasp"
+    peg_is_lifted = peg_z > (_TABLE_TOP_Z + _PEG_HALF_LENGTH + _LIFT_THRESHOLD)
+    phase = "post_grasp" if peg_is_lifted else "pre_grasp"
+    lower = bounds["peg_lower"] if phase == "pre_grasp" else bounds["hole_lower"]
+    upper = bounds["peg_upper"] if phase == "pre_grasp" else bounds["hole_upper"]
+    arm_qpos = qpos[:7]
+    violated = bool(np.any(arm_qpos < lower) or np.any(arm_qpos > upper))
+    return violated, phase
+
+
 
 # ── Environment ───────────────────────────────────────────────────────────────
 
@@ -193,17 +238,23 @@ while True:
 
         # Scalar extraction (ManiSkill may return tensors)
         r_val = reward.item() if hasattr(reward, "item") else float(reward)
-        done  = bool(terminated or truncated)
         succ  = bool(info["success"].item() if hasattr(info["success"], "item")
                      else info["success"])
 
-        _send({"ok":      True,
-               "qpos":    qpos,
-               "ext":     ext,
-               "wrist":   wrist,
-               "reward":  r_val,
-               "done":    done,
-               "success": succ})
+        # Workspace constraint check (no-op when _WORKSPACE_BOUNDS is None)
+        peg_z = float(_to_numpy(env.unwrapped.peg.pose.p).reshape(-1)[2])
+        workspace_violated, phase = _check_workspace(qpos, peg_z, _WORKSPACE_BOUNDS)
+        done  = bool(terminated or truncated) or workspace_violated
+
+        _send({"ok":                 True,
+               "qpos":               qpos,
+               "ext":                ext,
+               "wrist":              wrist,
+               "reward":             r_val,
+               "done":               done,
+               "success":            succ and not workspace_violated,
+               "workspace_violated": workspace_violated,
+               "phase":              phase})
 
     elif cmd == "close":
         env.close()

@@ -194,6 +194,11 @@ def run_rollout(
             env_steps = t + 1
             pbar.update(1)
 
+            # Workspace constraint check (pre/post-grasp bounding box)
+            if bool(info.get("workspace_violated", False)):
+                failure_reason = "workspace_" + info.get("phase", "pre_grasp")
+                break
+
             if bool(info.get("success", False)):
                 success = True
                 failure_reason = ""

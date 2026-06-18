@@ -12,6 +12,11 @@ Observation space (matches server _extract_obs):
 
 Action space:
     (8,) float32 in [-1, 1] — [arm_7d_vel, gripper] (panda_wristcam: 1 gripper cmd)
+
+Optional workspace constraint:
+    Pass workspace_bounds_path to enforce pre/post-grasp joint bounding boxes
+    (produced by examples/calibrate_workspace.py).  When active, step() returns
+    info["workspace_violated"] and info["phase"] on every call.
 """
 
 import pathlib
@@ -65,6 +70,7 @@ class ManiSkillRemoteEnv(gym.Env):
         fixed_hole_pose: dict | None = FIXED_HOLE_POSE,
         randomize_peg_pose: bool = True,
         peg_radius_range: tuple[float, float] = DROID_PEG_RADIUS_RANGE,
+        workspace_bounds_path: "str | None" = None,
     ):
         self._reset_options = {}
         if reset_qpos is not None:
@@ -84,8 +90,11 @@ class ManiSkillRemoteEnv(gym.Env):
         # torch/ManiSkill from initializing every GPU in the robofac process.
         server_env["CUDA_VISIBLE_DEVICES"] = ""
         server_env["NVIDIA_VISIBLE_DEVICES"] = ""
+        _server_cmd = [robofac_python, server_script]
+        if workspace_bounds_path is not None:
+            _server_cmd += ["--workspace_bounds", workspace_bounds_path]
         self._proc = subprocess.Popen(
-            [robofac_python, server_script],
+            _server_cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             start_new_session=True,
@@ -116,7 +125,11 @@ class ManiSkillRemoteEnv(gym.Env):
         self._send({"cmd": "step", "action": np.asarray(action).tolist()})
         r = self._recv()
         obs  = {"qpos": r["qpos"], "ext": r["ext"], "wrist": r["wrist"]}
-        info = {"success": r["success"]}
+        info = {
+            "success":            r["success"],
+            "workspace_violated": r.get("workspace_violated", False),
+            "phase":              r.get("phase", "pre_grasp"),
+        }
         return obs, r["reward"], r["done"], False, info
 
     def seed(self, seed=None):

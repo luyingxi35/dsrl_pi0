@@ -250,6 +250,11 @@ def collect_traj(variant, agent, env, i, agent_dp, obs_builder):
         done      = bool(terminated) or bool(truncated)
         env_steps = t + 1
 
+        # Workspace constraint check (pre/post-grasp bounding box)
+        if bool(info.get("workspace_violated", False)):
+            failure_reason = "workspace_" + info.get("phase", "pre_grasp")
+            break
+
         # Rule-based success check (has_peg_inserted)
         if bool(info["success"]):
             is_success     = True
@@ -520,6 +525,10 @@ def _perform_eval(agent, env, i, variant, wandb_logger, agent_dp, obs_builder) -
             env_obs, reward, terminated, truncated, info = env.step(action_8d)
             done          = bool(terminated) or bool(truncated)
             total_reward += float(reward) if reward is not None else 0.0
+
+            # Workspace constraint check
+            if bool(info.get("workspace_violated", False)):
+                break
 
             if bool(info["success"]):
                 is_success = True

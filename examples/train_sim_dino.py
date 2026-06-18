@@ -128,8 +128,11 @@ def main(variant):
     # panda_wristcam provides both base_camera (exterior) and hand_camera (wrist).
     robofac_python = getattr(variant, "robofac_python",
                              "/home/gpu4/miniconda3/envs/robofac/bin/python3")
-    env      = ManiSkillRemoteEnv(robofac_python=robofac_python)
-    eval_env = ManiSkillRemoteEnv(robofac_python=robofac_python)
+    workspace_bounds = getattr(variant, "workspace_bounds_path", None)
+    env      = ManiSkillRemoteEnv(robofac_python=robofac_python,
+                                  workspace_bounds_path=workspace_bounds)
+    eval_env = ManiSkillRemoteEnv(robofac_python=robofac_python,
+                                  workspace_bounds_path=workspace_bounds)
 
     if not hasattr(variant, "max_timesteps"):
         variant.max_timesteps = 600
