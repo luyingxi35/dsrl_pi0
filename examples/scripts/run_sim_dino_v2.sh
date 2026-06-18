@@ -73,6 +73,28 @@ echo ""
 
 # ── Launch all seeds in parallel, one per GPU ──────────────────────────────────
 PIDS=()
+
+cleanup() {
+    local code=$?
+    if [[ ${#PIDS[@]} -gt 0 ]]; then
+        echo ""
+        echo "Stopping launched SimDino V2 jobs: ${PIDS[*]}" >&2
+        for pid in "${PIDS[@]}"; do
+            kill -INT "$pid" 2>/dev/null || true
+        done
+        sleep 2
+        for pid in "${PIDS[@]}"; do
+            kill -TERM "$pid" 2>/dev/null || true
+        done
+        sleep 2
+        for pid in "${PIDS[@]}"; do
+            kill -KILL "$pid" 2>/dev/null || true
+        done
+    fi
+    exit "$code"
+}
+trap cleanup INT TERM
+
 for idx in "${!SEEDS_ARR[@]}"; do
     SEED=${SEEDS_ARR[$idx]}
     GPU=${GPUS_ARR[$idx]}

@@ -116,6 +116,28 @@ logs/DSRL_pi0_SimDinoV2/
 └── sim_dino_v2_curve.png        <- aggregated mean +/- std curve
 ```
 
+**Simulation policy evaluation** (run from the `dsrl_pi0` environment; ManiSkill
+rollouts are spawned in the `robofac` subprocess environment):
+```bash
+bash examples/scripts/eval_sim_pi0.sh
+
+bash examples/scripts/eval_sim_dino.sh \
+    --restore_path ./logs/DSRL_pi0_SimDinoV2/dsrl_pi0_sim_dino_v2_s0_<hash>
+```
+Both scripts default to `--device_id 0`, which sets `CUDA_VISIBLE_DEVICES=0` for
+the dsrl/OpenPI process so evaluation does not claim every GPU. Use
+`--device_id <GPU_ID>` to select a different card.
+
+Use `Ctrl-C` to stop these eval scripts. If a test eval is stuck, kill only the
+eval parent process group, not every `mani_skill_server.py` on the machine:
+```bash
+pgrep -af 'evaluate_pi0_sim.py|evaluate_policy_sim_dino.py|pi0_eval_sim|dino_eval_sim'
+ps -o pid,ppid,pgid,sid,stat,etime,cmd -p <PID>
+kill -INT -<PGID>
+kill -TERM -<PGID>
+kill -KILL -<PGID>   # only if TERM does not exit after a few seconds
+```
+
 **Plot only** (re-plot from existing CSVs without re-running training):
 ```bash
 python3 examples/plot_sim_dino_curve.py \

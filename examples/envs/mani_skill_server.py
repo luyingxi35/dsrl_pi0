@@ -167,7 +167,7 @@ while True:
     cmd = msg.get("cmd")
 
     if cmd == "reset":
-        obs, _ = env.reset()
+        obs, _ = env.reset(seed=msg.get("seed"), options=msg.get("options") or {})
         qpos, ext, wrist = _extract_obs(obs)
         _send({"ok": True, "qpos": qpos, "ext": ext, "wrist": wrist})
 
