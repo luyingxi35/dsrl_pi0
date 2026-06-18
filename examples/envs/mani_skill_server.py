@@ -3,13 +3,13 @@
 
 Serves PegInsertionVertical-v1 (panda_wristcam) via length-prefixed pickle
 protocol over stdin/stdout. Mirrors the real-robot DROID setup:
-  base_camera  → exterior image (128×128)
-  hand_camera  → wrist image   (128×128, mounted on gripper)
+  base_camera  → exterior image (224×224)
+  hand_camera  → wrist image   (224×224, mounted on gripper)
 
 Protocol:
   Client → Server: {"cmd": "reset"} or {"cmd": "step", "action": list(9)} or {"cmd": "close"}
-  Server → Client: {"ok": bool, "qpos": ndarray(9), "ext": ndarray(128,128,3),
-                    "wrist": ndarray(128,128,3), [reward, done, success]}
+  Server → Client: {"ok": bool, "qpos": ndarray(9), "ext": ndarray(224,224,3),
+                    "wrist": ndarray(224,224,3), [reward, done, success]}
 
 Usage (from dsrl_pi0 training side):
     Spawned automatically by ManiSkillRemoteEnv in mani_skill_client.py.
@@ -159,16 +159,16 @@ def _extract_obs(obs: dict):
 
     Returns:
         qpos  (9,)   float32 — 7 arm joints + 2 gripper fingers
-        ext   (H,W,3) uint8  — base_camera (exterior, 128×128)
-        wrist (H,W,3) uint8  — hand_camera (wrist, 128×128)
+        ext   (H,W,3) uint8  — base_camera (exterior, 224×224)
+        wrist (H,W,3) uint8  — hand_camera (wrist, 224×224)
     """
     # sapien_cpu backend: qpos is in obs['state'][:, :9], no obs['agent'] key
     if "agent" in obs:
         qpos = _to_numpy(obs["agent"]["qpos"])[0].astype(np.float32)      # (9,) GPU backend
     else:
         qpos = _to_numpy(obs["state"])[0, :9].astype(np.float32)             # (9,) CPU backend
-    ext   = _to_numpy(obs["sensor_data"]["base_camera"]["rgb"])[0].astype(np.uint8)   # (128,128,3)
-    wrist = _to_numpy(obs["sensor_data"]["hand_camera"]["rgb"])[0].astype(np.uint8)   # (128,128,3)
+    ext   = _to_numpy(obs["sensor_data"]["base_camera"]["rgb"])[0].astype(np.uint8)   # (224,224,3)
+    wrist = _to_numpy(obs["sensor_data"]["hand_camera"]["rgb"])[0].astype(np.uint8)   # (224,224,3)
     return qpos, ext, wrist
 
 
@@ -201,6 +201,14 @@ def _check_workspace(qpos: np.ndarray, peg_z: float, bounds) -> tuple:
 
 # ── Environment ───────────────────────────────────────────────────────────────
 
+# Calibrated exterior (side-view) camera pose — matches the real robot's
+# external camera as recorded in _default_human_render_camera_configs.
+# FOV=1.0 rad (~57°) also matches the render_camera calibration value.
+_EXT_CAM_POSE = sapien.Pose(
+    p=[ 0.705400, -0.086655,  0.686691],
+    q=[ 0.025112, -0.237384, -0.033640,  0.970508],
+)
+
 # panda_wristcam adds hand_camera sensor; SUPPORTED_ROBOTS only warns, not raises.
 env = gym.make(
     "PegInsertionVertical-v1",
@@ -209,7 +217,12 @@ env = gym.make(
     num_envs=1,
     robot_uids="panda_wristcam",
     control_mode="pd_joint_pos",
-    sensor_configs=dict(width=224, height=224),
+    sensor_configs={
+        # base_camera: exterior side-view, aligned to real camera pose + FOV
+        "base_camera": dict(width=224, height=224, fov=1.0, pose=_EXT_CAM_POSE),
+        # hand_camera: wrist-mounted, only override resolution
+        "hand_camera":  dict(width=224, height=224),
+    },
     max_episode_steps=600,
 )
 

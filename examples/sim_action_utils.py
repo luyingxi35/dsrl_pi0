@@ -160,3 +160,55 @@ def pi0_vel_chunk_to_joint_pos_actions(
         step_action[7]  = binarize_sim_gripper(float(action[7]))     # ±1
         result.append(step_action)
     return np.stack(result, axis=0)
+
+
+# Physical Panda joint limits (rad) — used for direct-position mapping.
+PANDA_JOINT_LOWER = np.array(
+    [-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973], dtype=np.float32
+)
+PANDA_JOINT_UPPER = np.array(
+    [ 2.8973,  1.7628,  2.8973, -0.0698,  2.8973,  3.7525,  2.8973], dtype=np.float32
+)
+
+
+def pi0_action_as_joint_pos(
+    actions: np.ndarray,
+    execution_steps: int = 6,
+) -> np.ndarray:
+    """Treat pi0 raw output directly as normalised joint *positions*.
+
+    Maps each pi0 action[:7] ∈ [-1, 1] to an absolute Panda joint angle
+    using the physical joint limits::
+
+        target_k = (upper + lower) / 2 + action_k * (upper - lower) / 2
+
+    This is the diagnostic counterpart of ``pi0_vel_chunk_to_joint_pos_actions``:
+    use it to test the hypothesis that the checkpoint encodes absolute positions
+    rather than velocities, without any integration.
+
+    Args:
+        actions:         (H, >=8) pi0 output — raw values in approximately [-1, 1].
+        execution_steps: Number of waypoints to return (cap at len(actions)).
+
+    Returns:
+        (N, 8) float32 where N = min(execution_steps, len(actions)):
+            [:, :7]  absolute joint angles [rad]  (feed directly to pd_joint_pos)
+            [:, 7]   binarised gripper ∈ {+1 open, -1 closed}  (ManiSkill convention)
+    """
+    actions_arr = np.asarray(actions, dtype=np.float32)
+    if actions_arr.ndim != 2 or actions_arr.shape[1] < 8:
+        raise ValueError(f"Expected pi0 actions shape (H, >=8), got {actions_arr.shape}")
+
+    centers = (PANDA_JOINT_UPPER + PANDA_JOINT_LOWER) / 2.0   # (7,)
+    ranges  = (PANDA_JOINT_UPPER - PANDA_JOINT_LOWER) / 2.0   # (7,)
+
+    n_steps = min(int(execution_steps), len(actions_arr))
+    result: list[np.ndarray] = []
+    for action in actions_arr[:n_steps]:
+        norm_pos = np.clip(action[:7], -1.0, 1.0)
+        abs_pos  = centers + norm_pos * ranges                 # [rad]
+        step_action = np.empty((8,), dtype=np.float32)
+        step_action[:7] = abs_pos
+        step_action[7]  = binarize_sim_gripper(float(action[7]))
+        result.append(step_action)
+    return np.stack(result, axis=0)

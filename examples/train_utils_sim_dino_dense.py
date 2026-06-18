@@ -1,4 +1,11 @@
-"""Simulation training utilities for train_sim_dino.py.
+"""Simulation training utilities for train_sim_dino_dense.py.
+
+Dense-reward variant: exterior camera frames buffered at each policy-query step
+are sent to Robometer at rollout end to get per-frame progress in [0, 1].
+
+  dense_reward[t] = binary_reward[t]  +  progress_reward_scale * progress[t]
+
+See also: train_utils_sim_dino.py (sparse-reward baseline).
 
 PegInsertionVertical-v1 (ManiSkill2/SAPIEN) + pi0_droid (local) + DINOv2 + StateSAC.
 
@@ -186,7 +193,7 @@ def _obs_to_pi0_input(qpos: np.ndarray, ext_rgb: np.ndarray,
 
 # ── Trajectory collection ──────────────────────────────────────────────────────
 
-def collect_traj(variant, agent, env, i, agent_dp, obs_builder):
+def collect_traj(variant, agent, env, i, agent_dp, obs_builder, robometer_client=None):
     """Collect one trajectory in simulation.
 
     Mirrors train_utils_real.py:collect_traj() but simplified for sim:
@@ -207,8 +214,9 @@ def collect_traj(variant, agent, env, i, agent_dp, obs_builder):
 
     env_obs, _ = env.reset()
 
-    action_list = []
-    obs_list    = []
+    action_list  = []
+    obs_list     = []
+    image_buffer = []   # exterior camera (224x224x3 uint8) at each query step
     actions     = None
     sim_actions = None
 
@@ -236,6 +244,7 @@ def collect_traj(variant, agent, env, i, agent_dp, obs_builder):
 
             action_list.append(actions_noise)
             obs_list.append(obs_dict)
+            image_buffer.append(ext_rgb.copy())  # buffer exterior frame for Robometer
 
             # pi0 denoises with the RL-predicted noise → executable action chunk
             actions = agent_dp.infer(pi0_obs, noise=noise)["actions"]
@@ -275,7 +284,7 @@ def collect_traj(variant, agent, env, i, agent_dp, obs_builder):
     print(f"Rollout Done: success={is_success}, "
           f"reason={failure_reason or 'success'}, steps={env_steps}")
 
-    # Sparse -1/0 reward (same as train_real_dino.py)
+    # Binary sparse reward (unchanged from train_utils_sim_dino.py)
     query_steps = len(action_list)
     if query_steps == 0:
         rewards_arr = np.array([], dtype=np.float32)
@@ -287,6 +296,26 @@ def collect_traj(variant, agent, env, i, agent_dp, obs_builder):
         rewards_arr = -np.ones(query_steps, dtype=np.float32)
         masks_arr   =  np.ones(query_steps, dtype=np.float32)
 
+    # Progress reward from Robometer (dense signal)
+    progress_reward = np.zeros(query_steps, dtype=np.float32)
+    if robometer_client is not None and len(image_buffer) > 0 and query_steps > 0:
+        rbm_frames = np.stack(image_buffer[:query_steps], axis=0)  # (T,224,224,3) uint8
+        try:
+            progress_scores, _ = robometer_client.compute_progress(rbm_frames, instruction)
+            if len(progress_scores) == query_steps:
+                scale = float(getattr(variant, "progress_reward_scale", 1.0))
+                progress_reward = scale * np.asarray(progress_scores, dtype=np.float32)
+            else:
+                print(
+                    f"[WARNING] Robometer returned {len(progress_scores)} scores "
+                    f"for {query_steps} query steps — skipping progress reward."
+                )
+        except Exception as _exc:  # noqa: BLE001
+            print(f"[WARNING] Robometer inference failed: {_exc}. Using binary reward only.")
+
+    # Dense reward = binary + progress
+    rewards_arr = rewards_arr + progress_reward
+
     return {
         "observations":   obs_list,
         "actions":        action_list,
@@ -295,10 +324,72 @@ def collect_traj(variant, agent, env, i, agent_dp, obs_builder):
         "is_success":     is_success,
         "failure_reason": failure_reason,
         "env_steps":      env_steps,
+        "image_buffer":   image_buffer,    # list of (224,224,3) uint8 ext frames, one per query step
+        "progress_reward": progress_reward, # (query_steps,) float32
     }
 
 
 # ── Training loop ──────────────────────────────────────────────────────────────
+
+
+def _log_reward_stats(
+    wandb_logger,
+    traj: dict,
+    step: int,
+    variant,
+) -> None:
+    """Log per-rollout dense/binary/progress reward statistics to wandb.
+
+    Metrics logged (all under ``rollout/reward/*``):
+      dense/*      — the actual SAC training reward (binary + progress)
+      binary/*     — sparse {-1, 0} component only
+      progress/*   — Robometer progress score × scale component only
+    """
+    rewards_arr  = traj.get("rewards")          # dense = binary + progress
+    prog_arr     = traj.get("progress_reward")  # progress component
+
+    if rewards_arr is None or len(rewards_arr) == 0:
+        return
+
+    import numpy as _np
+    rewards_arr = _np.asarray(rewards_arr, dtype=_np.float32)
+    scale = float(getattr(variant, "progress_reward_scale", 1.0))
+
+    # Derive binary and progress components
+    if prog_arr is not None and len(prog_arr) == len(rewards_arr):
+        prog_arr    = _np.asarray(prog_arr, dtype=_np.float32)
+        binary_arr  = rewards_arr - prog_arr
+        # Raw progress scores (before scale)
+        progress_scores = prog_arr / scale if scale != 0 else prog_arr
+    else:
+        binary_arr      = rewards_arr
+        prog_arr        = _np.zeros_like(rewards_arr)
+        progress_scores = _np.zeros_like(rewards_arr)
+
+    log_dict = {
+        # Dense reward (what SAC actually trains on)
+        "rollout/reward/dense_mean":  float(rewards_arr.mean()),
+        "rollout/reward/dense_max":   float(rewards_arr.max()),
+        "rollout/reward/dense_min":   float(rewards_arr.min()),
+        "rollout/reward/dense_last":  float(rewards_arr[-1]),
+        "rollout/reward/dense_sum":   float(rewards_arr.sum()),
+
+        # Binary component
+        "rollout/reward/binary_mean": float(binary_arr.mean()),
+        "rollout/reward/binary_last": float(binary_arr[-1]),
+
+        # Robometer progress component (raw score, before scale)
+        "rollout/reward/progress_mean": float(progress_scores.mean()),
+        "rollout/reward/progress_max":  float(progress_scores.max()),
+        "rollout/reward/progress_min":  float(progress_scores.min()),
+        "rollout/reward/progress_last": float(progress_scores[-1]),
+
+        # Metadata
+        "rollout/reward/query_steps":  len(rewards_arr),
+        "rollout/reward/env_steps":    int(traj.get("env_steps", 0)),
+    }
+    wandb_logger.log(log_dict, step=step)
+
 
 def trajwise_alternating_training_loop(
     variant,
@@ -311,6 +402,7 @@ def trajwise_alternating_training_loop(
     shard_fn=None,
     agent_dp=None,
     obs_builder=None,
+    robometer_client=None,
     # ── Sweep / early-stop parameters ──────────────────────────────────────────
     eval_env_step_interval: int   = -1,
     stop_success_rate:      float = 0.95,
@@ -360,7 +452,8 @@ def trajwise_alternating_training_loop(
 
     with tqdm(total=variant.max_steps, initial=0) as pbar:
         while i <= variant.max_steps and not _converged:
-            traj = collect_traj(variant, agent, env, i, agent_dp, obs_builder)
+            traj = collect_traj(variant, agent, env, i, agent_dp, obs_builder,
+                               robometer_client=robometer_client)
             total_num_traj += 1
             successes      += int(traj["is_success"])
             add_online_data_to_buffer(variant, traj, online_replay_buffer)
@@ -377,6 +470,7 @@ def trajwise_alternating_training_loop(
             wandb_logger.log(
                 {f'rollout_result/{traj["failure_reason"] or "success"}': 1}, step=i
             )
+            _log_reward_stats(wandb_logger, traj, step=i, variant=variant)
 
             # ── Sweep: env-step triggered eval + ckpt + early stop ─────────────
             if _sweep_active and total_env_steps >= _next_eval_env_step:

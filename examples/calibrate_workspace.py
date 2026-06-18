@@ -159,13 +159,21 @@ def calibrate(args) -> None:
     rng = np.random.default_rng(args.seed)
 
     # ── create env ────────────────────────────────────────────────────────────
+    # Calibrated exterior camera pose — same as mani_skill_server.py.
+    _ext_cam_pose = sapien.Pose(
+        p=[ 0.705400, -0.086655,  0.686691],
+        q=[ 0.025112, -0.237384, -0.033640,  0.970508],
+    )
     env = gym.make(
         "PegInsertionVertical-v1",
         obs_mode="rgb+state",
         render_mode="rgb_array",
         num_envs=1,
         robot_uids="panda_wristcam",
-        sensor_configs=dict(width=IMG_W, height=IMG_H),
+        sensor_configs={
+            "base_camera": dict(width=IMG_W, height=IMG_H, fov=1.0, pose=_ext_cam_pose),
+            "hand_camera":  dict(width=IMG_W, height=IMG_H),
+        },
         max_episode_steps=600,
     )
 

@@ -55,7 +55,7 @@ if [[ -z "${RESTORE_PATH}" ]]; then
     exit 1
 fi
 
-export CUDA_VISIBLE_DEVICES="${DEVICE_ID}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-${DEVICE_ID}}"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.5
 export XLA_FLAGS="${XLA_FLAGS:-} --xla_gpu_triton_gemm_any=True"
