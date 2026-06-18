@@ -250,9 +250,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--checkpoint_path", default=DEFAULT_CHECKPOINT_PATH)
     parser.add_argument("--robofac_python", default=DEFAULT_ROBOFAC_PYTHON)
-    parser.add_argument("--workspace_bounds_path", default=None,
+    parser.add_argument("--workspace_bounds_path",
+                        default="/home/gpu4/yingxi/dsrl_pi0/workspace_bounds.json",
                         help="Path to workspace_bounds.json "
-                             "(None = no workspace constraint)")
+                             "(default: calibrated bounds; set to empty string to disable)")
     parser.add_argument("--outputdir", default=None)
 
     parser.add_argument("--rl_noise_horizon", default=8, type=int)

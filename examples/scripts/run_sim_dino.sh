@@ -64,17 +64,8 @@ export LD_LIBRARY_PATH="${ALL_NVIDIA}:${LD_LIBRARY_PATH}"
 
 mkdir -p "$EXP"
 
-# ── Workspace bounds (auto-detected) ──────────────────────────────────────────
-# If workspace_bounds.json exists in the repo root, enforce workspace constraint.
-# Generate it first with: /opt/yingxi/envs/robofac/bin/python3 \
-#     examples/calibrate_workspace.py --output workspace_bounds.json
-WORKSPACE_BOUNDS_PATH=""
-if [[ -f "./workspace_bounds.json" ]]; then
-    WORKSPACE_BOUNDS_PATH="$(pwd)/workspace_bounds.json"
-    echo "[workspace] bounds detected: ${WORKSPACE_BOUNDS_PATH}"
-else
-    echo "[workspace] no workspace_bounds.json found — running without constraint"
-fi
+# ── Workspace bounds ─────────────────────────────────────────────────────────
+WORKSPACE_BOUNDS_PATH="/home/gpu4/yingxi/dsrl_pi0/workspace_bounds.json"
 
 echo "=== SimDino Sweep (parallel) ==="
 echo "  Seeds: ${SEEDS_ARR[*]}"

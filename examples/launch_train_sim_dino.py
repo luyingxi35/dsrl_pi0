@@ -52,9 +52,10 @@ if __name__ == "__main__":
     parser.add_argument("--robofac_python",
                         default="/opt/yingxi/envs/robofac/bin/python3",
                         help="Path to robofac conda Python (runs ManiSkill server)")
-    parser.add_argument("--workspace_bounds_path", default=None,
+    parser.add_argument("--workspace_bounds_path",
+                        default="/home/gpu4/yingxi/dsrl_pi0/workspace_bounds.json",
                         help="Path to workspace_bounds.json from calibrate_workspace.py "
-                             "(None = no workspace constraint)")
+                             "(default: calibrated bounds; set to empty string to disable)")
 
     # ── Sweep / early-stop ─────────────────────────────────────────────────────
     parser.add_argument("--eval_env_step_interval", default=1000, type=int,
