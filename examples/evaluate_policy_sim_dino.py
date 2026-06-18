@@ -250,6 +250,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--checkpoint_path", default=DEFAULT_CHECKPOINT_PATH)
     parser.add_argument("--robofac_python", default=DEFAULT_ROBOFAC_PYTHON)
+    parser.add_argument("--workspace_bounds_path", default=None,
+                        help="Path to workspace_bounds.json "
+                             "(None = no workspace constraint)")
     parser.add_argument("--outputdir", default=None)
 
     parser.add_argument("--rl_noise_horizon", default=8, type=int)
@@ -303,7 +306,8 @@ def run_evaluation(args: argparse.Namespace) -> None:
     csv_path = outputdir / "eval_results.csv"
     logging.info("Writing dino sim evaluation outputs to %s", outputdir)
 
-    env = ManiSkillRemoteEnv(robofac_python=args.robofac_python)
+    env = ManiSkillRemoteEnv(robofac_python=args.robofac_python,
+                             workspace_bounds_path=args.workspace_bounds_path)
 
     agent = create_agent(args)
     if args.action_horizon > agent.action_chunk_shape[0]:
