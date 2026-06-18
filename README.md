@@ -91,30 +91,30 @@ state = [ proprio (8-D) | pi0 VLM embed (2048-D) | DINOv2-small CLS (384-D) ] = 
 # Every 1000 env steps: eval (10 episodes) + save checkpoint.
 # Stops each seed once success rate >= 95% for 2 consecutive evals.
 # Plots mean +/- std curve after all seeds finish.
-bash examples/scripts/run_sim_dino_v2.sh
+bash examples/scripts/run_sim_dino.sh
 
 # Custom seeds:
-bash examples/scripts/run_sim_dino_v2.sh --seeds "0 1 2 3 4"
+bash examples/scripts/run_sim_dino.sh --seeds "0 1 2 3 4"
 
 # Custom GPU assignment (e.g. use GPUs 4-6 instead of 0-2):
-bash examples/scripts/run_sim_dino_v2.sh --seeds "0 1 2" --gpus "4 5 6"
+bash examples/scripts/run_sim_dino.sh --seeds "0 1 2" --gpus "4 5 6"
 ```
 
-Each seed's stdout/stderr is redirected to `logs/DSRL_pi0_SimDinoV2/seed<N>_gpu<G>.log`.
+Each seed's stdout/stderr is redirected to `logs/DSRL_pi0_SimDino/seed<N>_gpu<G>.log`.
 Monitor live progress with:
 ```bash
-tail -f logs/DSRL_pi0_SimDinoV2/seed*.log
+tail -f logs/DSRL_pi0_SimDino/seed*.log
 ```
 
 Output layout:
 ```
-logs/DSRL_pi0_SimDinoV2/
-├── dsrl_pi0_sim_dino_v2_s0_<hash>/
+logs/DSRL_pi0_SimDino/
+├── dsrl_pi0_sim_dino_s0_<hash>/
 │   ├── checkpoint_<grad_step>   <- checkpoints at each eval milestone
 │   └── eval_curve.csv           <- columns: env_steps, success_rate
-├── dsrl_pi0_sim_dino_v2_s1_<hash>/  ...
-├── dsrl_pi0_sim_dino_v2_s2_<hash>/  ...
-└── sim_dino_v2_curve.png        <- aggregated mean +/- std curve
+├── dsrl_pi0_sim_dino_s1_<hash>/  ...
+├── dsrl_pi0_sim_dino_s2_<hash>/  ...
+└── sim_dino_curve.png        <- aggregated mean +/- std curve
 ```
 
 **Simulation policy evaluation** (run from the `dsrl_pi0` environment; ManiSkill
@@ -123,7 +123,7 @@ rollouts are spawned in the `robofac` subprocess environment):
 bash examples/scripts/eval_sim_pi0.sh
 
 bash examples/scripts/eval_sim_dino.sh \
-    --restore_path ./logs/DSRL_pi0_SimDinoV2/dsrl_pi0_sim_dino_v2_s0_<hash>
+    --restore_path ./logs/DSRL_pi0_SimDino/dsrl_pi0_sim_dino_s0_<hash>
 ```
 Both scripts default to `--device_id 0`, which sets `CUDA_VISIBLE_DEVICES=0` for
 the dsrl/OpenPI process so evaluation does not claim every GPU. Use
@@ -142,17 +142,17 @@ kill -KILL -<PGID>   # only if TERM does not exit after a few seconds
 **Plot only** (re-plot from existing CSVs without re-running training):
 ```bash
 python3 examples/plot_sim_dino_curve.py \
-    --log_dir  ./logs/DSRL_pi0_SimDinoV2 \
-    --output   ./logs/DSRL_pi0_SimDinoV2/sim_dino_v2_curve.png \
+    --log_dir  ./logs/DSRL_pi0_SimDino \
+    --output   ./logs/DSRL_pi0_SimDino/sim_dino_curve.png \
     --stop_line 0.95 \
-    --title    "PegInsertionVertical v2 — DSRL (wrist-aligned)"
+    --title    "PegInsertionVertical — DSRL (wrist-aligned)"
 ```
 
 **Live curve during training** — each seed appends a row to `eval_curve.csv` after every eval, so you can re-run the plot command at any point during training to inspect progress.
 
 Key differences across training variants:
 
-| | `run_libero.sh` | `run_real_dino.sh` | `run_sim_dino_v2.sh` |
+| | `run_libero.sh` | `run_real_dino.sh` | `run_sim_dino.sh` |
 |---|---|---|---|
 | Environment | LIBERO (MuJoCo) | Franka DROID (real) | PegInsertionVertical (ManiSkill, subprocess) |
 | SAC | PixelSAC + CNN | StateSAC + Transformer | StateSAC + Transformer |
@@ -160,7 +160,7 @@ Key differences across training variants:
 | Camera for DINOv2 | — | wrist (RealSense) | wrist (`hand_camera`, 224x224) |
 | pi0 inference | local | remote server | local |
 | Success signal | env reward | human GUI label | rule-based geometry |
-| Multi-seed sweep | — | — | `run_sim_dino_v2.sh` |
+| Multi-seed sweep | — | — | `run_sim_dino.sh` |
 
 ### Training Logs
 We provide sample W&B runs and logs: https://wandb.ai/mitsuhiko/DSRL_pi0_public
