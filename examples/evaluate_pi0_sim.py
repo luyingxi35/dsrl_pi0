@@ -24,7 +24,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from examples.envs.mani_skill_client import ManiSkillRemoteEnv
-from examples.sim_action_utils import pi0_velocity_chunk_to_sim_actions
+from examples.sim_action_utils import RealTimeActionChunker, pi0_velocity_chunk_to_sim_actions
 from examples.utils.real_robot_common import (
     RolloutResult,
     append_result,
@@ -206,8 +206,11 @@ def run_rollout(
     start_time = time.time()
     side_image_list: list[np.ndarray] = []
     wrist_image_list: list[np.ndarray] = []
-    actions = None
-    sim_actions = None
+    action_chunker = RealTimeActionChunker(
+        action_horizon=args.action_horizon,
+        action_dim=8,
+        m=args.action_chunk_decay,
+    )
     success = False
     failure_reason = "timeout"
     env_steps = 0
@@ -219,20 +222,19 @@ def run_rollout(
             side_image_list.append(ext_rgb)
             wrist_image_list.append(wrist_rgb)
 
-            if t % args.query_freq == 0 or actions is None:
-                pi0_obs = _obs_to_pi0_input(qpos, ext_rgb, wrist_rgb, args.instruction)
-                actions = np.asarray(agent_dp.infer(pi0_obs)["actions"])
-                if actions.ndim != 2 or actions.shape[-1] < 8:
-                    raise RuntimeError(f"Expected pi0 actions shape (H, >=8), got {actions.shape}")
-                if args.query_freq > len(actions):
-                    raise RuntimeError(
-                        f"--query_freq ({args.query_freq}) exceeds pi0 action horizon ({len(actions)})."
-                    )
-                sim_actions = pi0_velocity_chunk_to_sim_actions(
-                    qpos, actions, action_scale=args.action_scale
+            pi0_obs = _obs_to_pi0_input(qpos, ext_rgb, wrist_rgb, args.instruction)
+            actions = np.asarray(agent_dp.infer(pi0_obs)["actions"])
+            if actions.ndim != 2 or actions.shape[-1] < 8:
+                raise RuntimeError(f"Expected pi0 actions shape (H, >=8), got {actions.shape}")
+            if len(actions) < args.action_horizon:
+                raise RuntimeError(
+                    f"--action_horizon ({args.action_horizon}) exceeds pi0 action horizon "
+                    f"({len(actions)})."
                 )
-
-            action_8d = np.asarray(sim_actions[t % args.query_freq], dtype=np.float32)
+            sim_actions = pi0_velocity_chunk_to_sim_actions(
+                qpos, actions[: args.action_horizon], action_scale=args.action_scale
+            )
+            action_8d = action_chunker.step(sim_actions)
             env_obs, _reward, terminated, truncated, info = env.step(action_8d)
             env_steps = t + 1
             pbar.update(1)
@@ -274,7 +276,17 @@ def build_parser() -> argparse.ArgumentParser:
         dest="query_freq",
         default=4,
         type=int,
-        help="Run pi0 inference every N simulation steps.",
+        help=(
+            "Legacy recorded query frequency. Sim eval now runs pi0 inference every "
+            "control step and temporally ensembles overlapping chunks."
+        ),
+    )
+    parser.add_argument("--action_horizon", default=8, type=int)
+    parser.add_argument(
+        "--action_chunk_decay",
+        default=0.01,
+        type=float,
+        help="Exponential decay m for real-time action chunk ensembling.",
     )
     parser.add_argument("--checkpoint_path", default=DEFAULT_CHECKPOINT_PATH)
     parser.add_argument("--robofac_python", default=DEFAULT_ROBOFAC_PYTHON)
@@ -295,6 +307,10 @@ def run_evaluation(args: argparse.Namespace) -> None:
         raise ValueError("--max_rollout_steps must be positive.")
     if args.query_freq <= 0:
         raise ValueError("--query_freq/--execution_steps must be positive.")
+    if args.action_horizon <= 0:
+        raise ValueError("--action_horizon must be positive.")
+    if args.action_chunk_decay < 0:
+        raise ValueError("--action_chunk_decay must be non-negative.")
     if args.action_scale <= 0:
         raise ValueError("--action_scale must be positive.")
     if not Path(args.checkpoint_path).exists():
