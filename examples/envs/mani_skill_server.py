@@ -147,6 +147,13 @@ def _extract_obs(obs: dict):
     return qpos, ext, wrist
 
 
+def _pose_to_list(pose):
+    raw_pose = getattr(pose, "raw_pose", None)
+    if raw_pose is not None:
+        pose = raw_pose
+    return np.asarray(_to_numpy(pose), dtype=np.float32).reshape(-1, 7)[0].tolist()
+
+
 # ── Environment ───────────────────────────────────────────────────────────────
 
 # panda_wristcam adds hand_camera sensor; SUPPORTED_ROBOTS only warns, not raises.
@@ -157,8 +164,8 @@ env = gym.make(
     num_envs=1,
     robot_uids="panda_wristcam",
     sensor_configs=dict(width=224, height=224),
+    max_episode_steps=600,
 )
-
 
 # ── Main server loop ──────────────────────────────────────────────────────────
 
@@ -169,10 +176,18 @@ while True:
     if cmd == "reset":
         obs, _ = env.reset(seed=msg.get("seed"), options=msg.get("options") or {})
         qpos, ext, wrist = _extract_obs(obs)
-        _send({"ok": True, "qpos": qpos, "ext": ext, "wrist": wrist})
+        base_env = env.unwrapped
+        _send({
+            "ok": True,
+            "qpos": qpos,
+            "ext": ext,
+            "wrist": wrist,
+            "peg_pose": _pose_to_list(base_env.peg.pose),
+            "hole_pose": _pose_to_list(base_env.box_hole_pose),
+        })
 
     elif cmd == "step":
-        action = np.asarray(msg["action"], dtype=np.float32).reshape(1, -1)  # (1,8): batched for ManiSkill
+        action = np.asarray(msg["action"], dtype=np.float32).reshape(1, -1)
         obs, reward, terminated, truncated, info = env.step(action)
         qpos, ext, wrist = _extract_obs(obs)
 

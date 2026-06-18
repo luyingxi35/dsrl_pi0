@@ -712,13 +712,19 @@ class LatestObservationBuffer:
 
 # ── Video utilities ────────────────────────────────────────────────────────────
 
-def save_rollout_video(outputdir: Path, episode_id: int, image_list: list[np.ndarray]) -> str:
+def save_rollout_video(
+    outputdir: Path,
+    episode_id: int,
+    image_list: list[np.ndarray],
+    camera_name: str | None = None,
+) -> str:
     if not image_list:
         return ""
     from moviepy.editor import ImageSequenceClip
     from moviepy.video.io.ffmpeg_writer import ffmpeg_write_video
 
-    video_path = outputdir / f"eval_video_{episode_id}.mp4"
+    suffix = f"_{camera_name}" if camera_name else ""
+    video_path = outputdir / f"eval_video_{episode_id}{suffix}.mp4"
     fps = float(VIDEO_FPS)
     video = np.stack(image_list)
     clip = ImageSequenceClip(list(video), fps=fps)

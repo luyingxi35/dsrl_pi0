@@ -23,6 +23,7 @@ from jaxrl2.utils.noise_utils import make_full_horizon_noise
 
 # Reuse buffer insertion from train_utils_sim (identical logic, no modification needed)
 from examples.train_utils_sim import add_online_data_to_buffer  # noqa: F401
+from examples.sim_action_utils import pi0_velocity_chunk_to_sim_actions
 
 # ── Constants (mirrors train_real_dino.py) ─────────────────────────────────────
 PROPRIO_DIM           = 8
@@ -209,6 +210,7 @@ def collect_traj(variant, agent, env, i, agent_dp, obs_builder):
     action_list = []
     obs_list    = []
     actions     = None
+    sim_actions = None
 
     for t in tqdm(range(max_timesteps)):
         qpos, ext_rgb, wrist_rgb = _extract_sim_obs(env_obs)
@@ -237,12 +239,13 @@ def collect_traj(variant, agent, env, i, agent_dp, obs_builder):
 
             # pi0 denoises with the RL-predicted noise → executable action chunk
             actions = agent_dp.infer(pi0_obs, noise=noise)["actions"]
+            sim_actions = pi0_velocity_chunk_to_sim_actions(
+                qpos,
+                actions,
+                action_scale=getattr(variant, "action_scale", 0.5),
+            )
 
-        action_t = actions[t % query_frequency]
-
-        # pi0_droid outputs 8-dim: [7 arm velocities, 1 gripper]
-        # panda_wristcam expects (1, 8): batched [7 arm + 1 gripper]
-        action_8d = np.asarray(action_t[:8], dtype=np.float32)
+        action_8d = np.asarray(sim_actions[t % query_frequency], dtype=np.float32)
         env_obs, _reward, terminated, truncated, info = env.step(action_8d)
         done      = bool(terminated) or bool(truncated)
         env_steps = t + 1
@@ -487,6 +490,7 @@ def _perform_eval(agent, env, i, variant, wandb_logger, agent_dp, obs_builder) -
     for rollout_id in range(variant.eval_episodes):
         env_obs, _ = env.reset()
         actions      = None
+        sim_actions  = None
         total_reward = 0.0
         is_success   = False
 
@@ -506,9 +510,13 @@ def _perform_eval(agent, env, i, variant, wandb_logger, agent_dp, obs_builder) -
                     _, noise      = make_full_horizon_noise(actions_noise, agent.action_chunk_shape)
 
                 actions = agent_dp.infer(pi0_obs, noise=noise)["actions"]
+                sim_actions = pi0_velocity_chunk_to_sim_actions(
+                    qpos,
+                    actions,
+                    action_scale=getattr(variant, "action_scale", 0.5),
+                )
 
-            action_t  = actions[t % query_frequency]
-            action_8d = np.asarray(action_t[:8], dtype=np.float32)
+            action_8d = np.asarray(sim_actions[t % query_frequency], dtype=np.float32)
             env_obs, reward, terminated, truncated, info = env.step(action_8d)
             done          = bool(terminated) or bool(truncated)
             total_reward += float(reward) if reward is not None else 0.0

@@ -132,7 +132,7 @@ def main(variant):
     eval_env = ManiSkillRemoteEnv(robofac_python=robofac_python)
 
     if not hasattr(variant, "max_timesteps"):
-        variant.max_timesteps = 300   # PegInsertionVertical-v1 max_episode_steps
+        variant.max_timesteps = 600
     variant.env_max_reward = 1
 
     # ── SAC agent (init BEFORE pi0 to claim cuSolver handle first) ──────────────

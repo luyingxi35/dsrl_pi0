@@ -15,8 +15,9 @@ PI0_DROID_CKPT=/opt/yingxi/pi0_droid
 DEVICE_ID=0
 
 EVAL_EPISODES=10
-MAX_ROLLOUT_STEPS=300
+MAX_ROLLOUT_STEPS=600
 QUERY_FREQ=8
+ACTION_SCALE=0.5
 OUTPUTDIR=./logs/pi0_eval_sim
 INSTRUCTION="pick up the peg and insert it vertically"
 
@@ -25,6 +26,7 @@ while [[ $# -gt 0 ]]; do
         --eval_episodes) EVAL_EPISODES="$2"; shift 2 ;;
         --max_rollout_steps) MAX_ROLLOUT_STEPS="$2"; shift 2 ;;
         --query_freq) QUERY_FREQ="$2"; shift 2 ;;
+        --action_scale) ACTION_SCALE="$2"; shift 2 ;;
         --outputdir) OUTPUTDIR="$2"; shift 2 ;;
         --instruction) INSTRUCTION="$2"; shift 2 ;;
         --checkpoint_path) PI0_DROID_CKPT="$2"; shift 2 ;;
@@ -49,6 +51,7 @@ export LD_LIBRARY_PATH="${ALL_NVIDIA}:${LD_LIBRARY_PATH:-}"
     --eval_episodes "${EVAL_EPISODES}" \
     --max_rollout_steps "${MAX_ROLLOUT_STEPS}" \
     --query_freq "${QUERY_FREQ}" \
+    --action_scale "${ACTION_SCALE}" \
     --robofac_python "${ROBOFAC_PYTHON}" \
     --instruction "${INSTRUCTION}" \
     --outputdir "${OUTPUTDIR}"

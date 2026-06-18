@@ -116,13 +116,14 @@ for idx in "${!SEEDS_ARR[@]}"; do
             --discount 0.99 \
             --seed "$SEED" \
             --max_steps 500000 \
-            --max_timesteps 300 \
+            --max_timesteps 600 \
             --eval_episodes 10 \
             --eval_interval 999999 \
             --log_interval 100 \
             --multi_grad_step 5 \
             --num_initial_traj_collect 5 \
             --action_magnitude 2.0 \
+            --action_scale 0.5 \
             --instruction 'pick up the peg and insert it vertically' \
             --query_freq 8 \
             --rl_noise_horizon 8 \

@@ -41,7 +41,7 @@ DROID_RESET_QPOS = np.array(
         -4 * np.pi / 5,
         0.0,
         3 * np.pi / 5,
-        0.0,
+        np.pi,
         0.04,
         0.04,
     ],
@@ -97,7 +97,7 @@ class ManiSkillRemoteEnv(gym.Env):
             "ext":   Box(0, 255,          _CAM_SHAPE,  dtype=np.uint8),
             "wrist": Box(0, 255,          _CAM_SHAPE,  dtype=np.uint8),
         })
-        self.action_space = Box(-1.0, 1.0, (8,), dtype=np.float32)   # panda_wristcam: 7 arm joints + 1 gripper
+        self.action_space = Box(-2.0, 2.0, (8,), dtype=np.float32)   # panda_wristcam: 7 arm joints + 1 gripper
 
     # ── gym interface ──────────────────────────────────────────────────────────
 
@@ -106,7 +106,11 @@ class ManiSkillRemoteEnv(gym.Env):
         self._send({"cmd": "reset", "seed": seed, "options": reset_options})
         r = self._recv()
         obs = {"qpos": r["qpos"], "ext": r["ext"], "wrist": r["wrist"]}
-        return obs, {}
+        info = {
+            "peg_pose": r.get("peg_pose"),
+            "hole_pose": r.get("hole_pose"),
+        }
+        return obs, info
 
     def step(self, action):
         self._send({"cmd": "step", "action": np.asarray(action).tolist()})

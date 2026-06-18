@@ -31,7 +31,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_interval",  default=10000,  type=int)
     parser.add_argument("--batch_size",           default=256,    type=int)
     parser.add_argument("--max_steps",            default=500_000, type=int)
-    parser.add_argument("--max_timesteps",        default=300,    type=int)
+    parser.add_argument("--max_timesteps",        default=600,    type=int)
     parser.add_argument("--add_states",           default=1,      type=int)
     parser.add_argument("--wandb_project",        default="DSRL_pi0_SimDinoV2")
     parser.add_argument("--num_initial_traj_collect", default=5,  type=int)
@@ -44,6 +44,8 @@ if __name__ == "__main__":
     parser.add_argument("--instruction",
                         default="pick up the peg and insert it vertically")
     parser.add_argument("--checkpoint_path",      default="/opt/yingxi/pi0_droid")
+    parser.add_argument("--action_scale",         default=0.5,    type=float,
+                        help="Scale on DROID max_joint_delta=0.2 rad/step. Default 0.5 => 0.1 rad/step.")
     parser.add_argument("--dino_model",           default="facebook/dinov2-small")
     parser.add_argument("--dino_device",          default="auto")
 

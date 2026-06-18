@@ -24,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from examples.envs.mani_skill_client import ManiSkillRemoteEnv
+from examples.sim_action_utils import pi0_velocity_chunk_to_sim_actions
 from examples.utils.real_robot_common import (
     RolloutResult,
     append_result,
@@ -42,11 +43,13 @@ RESULT_FIELDS = [
     "env_steps",
     "duration_s",
     "video_path",
+    "wrist_video_path",
     "timestamp",
     "instruction",
     "checkpoint_path",
     "query_freq",
     "max_rollout_steps",
+    "action_scale",
     "robofac_python",
 ]
 
@@ -195,14 +198,16 @@ def run_rollout(
     agent_dp: Any,
     episode_id: int,
     outputdir: Path,
-) -> RolloutResult:
+) -> tuple[RolloutResult, str]:
     from tqdm import tqdm
 
     env_obs, _ = env.reset()
     timestamp = dt.datetime.now().isoformat(timespec="seconds")
     start_time = time.time()
-    image_list: list[np.ndarray] = []
+    side_image_list: list[np.ndarray] = []
+    wrist_image_list: list[np.ndarray] = []
     actions = None
+    sim_actions = None
     success = False
     failure_reason = "timeout"
     env_steps = 0
@@ -211,7 +216,8 @@ def run_rollout(
     try:
         for t in range(args.max_rollout_steps):
             qpos, ext_rgb, wrist_rgb = _extract_sim_obs(env_obs)
-            image_list.append(ext_rgb)
+            side_image_list.append(ext_rgb)
+            wrist_image_list.append(wrist_rgb)
 
             if t % args.query_freq == 0 or actions is None:
                 pi0_obs = _obs_to_pi0_input(qpos, ext_rgb, wrist_rgb, args.instruction)
@@ -222,9 +228,11 @@ def run_rollout(
                     raise RuntimeError(
                         f"--query_freq ({args.query_freq}) exceeds pi0 action horizon ({len(actions)})."
                     )
+                sim_actions = pi0_velocity_chunk_to_sim_actions(
+                    qpos, actions, action_scale=args.action_scale
+                )
 
-            action_t = actions[t % args.query_freq]
-            action_8d = np.asarray(action_t[:8], dtype=np.float32)
+            action_8d = np.asarray(sim_actions[t % args.query_freq], dtype=np.float32)
             env_obs, _reward, terminated, truncated, info = env.step(action_8d)
             env_steps = t + 1
             pbar.update(1)
@@ -239,7 +247,10 @@ def run_rollout(
         pbar.close()
 
     duration_s = time.time() - start_time
-    video_path = save_rollout_video(outputdir, episode_id, image_list)
+    video_path = save_rollout_video(outputdir, episode_id, side_image_list, camera_name="side")
+    wrist_video_path = save_rollout_video(
+        outputdir, episode_id, wrist_image_list, camera_name="wrist"
+    )
     return RolloutResult(
         episode_id=episode_id,
         success=success,
@@ -248,24 +259,31 @@ def run_rollout(
         duration_s=duration_s,
         video_path=video_path,
         timestamp=timestamp,
-    )
+    ), wrist_video_path
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate pi0_droid in ManiSkill simulation.")
-    parser.add_argument("--instruction", default="pick up the peg and insert it vertically")
+    parser.add_argument("--instruction", default="pick up the blue peg and insert it into the hole")
+    # parser.add_argument("--instruction", default="pick up the blue peg")
     parser.add_argument("--eval_episodes", default=10, type=int)
-    parser.add_argument("--max_rollout_steps", default=300, type=int)
+    parser.add_argument("--max_rollout_steps", default=600, type=int)
     parser.add_argument(
         "--query_freq",
         "--execution_steps",
         dest="query_freq",
-        default=8,
+        default=4,
         type=int,
         help="Run pi0 inference every N simulation steps.",
     )
     parser.add_argument("--checkpoint_path", default=DEFAULT_CHECKPOINT_PATH)
     parser.add_argument("--robofac_python", default=DEFAULT_ROBOFAC_PYTHON)
+    parser.add_argument(
+        "--action_scale",
+        default=0.5,
+        type=float,
+        help="Scale on DROID max_joint_delta=0.2 rad/step. Default 0.5 => 0.1 rad/step.",
+    )
     parser.add_argument("--outputdir", default=None)
     return parser
 
@@ -277,6 +295,8 @@ def run_evaluation(args: argparse.Namespace) -> None:
         raise ValueError("--max_rollout_steps must be positive.")
     if args.query_freq <= 0:
         raise ValueError("--query_freq/--execution_steps must be positive.")
+    if args.action_scale <= 0:
+        raise ValueError("--action_scale must be positive.")
     if not Path(args.checkpoint_path).exists():
         raise FileNotFoundError(f"pi0 checkpoint path does not exist: {args.checkpoint_path}")
 
@@ -290,7 +310,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
     successes = 0
     try:
         for episode_id in range(args.eval_episodes):
-            result = run_rollout(args, env, agent_dp, episode_id, outputdir)
+            result, wrist_video_path = run_rollout(args, env, agent_dp, episode_id, outputdir)
             completed += 1
             successes += int(result.success)
 
@@ -301,11 +321,13 @@ def run_evaluation(args: argparse.Namespace) -> None:
                 "env_steps": result.env_steps,
                 "duration_s": f"{result.duration_s:.3f}",
                 "video_path": result.video_path,
+                "wrist_video_path": wrist_video_path,
                 "timestamp": result.timestamp,
                 "instruction": args.instruction,
                 "checkpoint_path": args.checkpoint_path,
                 "query_freq": args.query_freq,
                 "max_rollout_steps": args.max_rollout_steps,
+                "action_scale": args.action_scale,
                 "robofac_python": args.robofac_python,
             }
             append_result(csv_path, row, RESULT_FIELDS)

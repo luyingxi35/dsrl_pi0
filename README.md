@@ -80,6 +80,7 @@ state = [ proprio (8-D) | pi0 VLM embed (2048-D) | DINOv2-small CLS (384-D) ] = 
 
 - **Policy**: `pi0_droid` (local, `/opt/yingxi/pi0_droid`; DroidInputs format, action_horizon=8)
 - **Environment**: `PegInsertionVertical-v1` from [RoboFPE](https://github.com/luyingxi35/RoboFPE), running in an **isolated subprocess** (robofac conda env) to avoid ManiSkill/sapien dependency conflicts with the JAX training process
+- **Reset distribution**: robot joints use the DROID reset pose; the hole stays fixed, and only the peg is randomized in a small ring around the hole by the dsrl_pi0 remote-env wrapper (RoboFPE source logic is unchanged)
 - **Cameras**: 224×224 `base_camera` (exterior) + `hand_camera` (wrist, `panda_wristcam`); DINOv2 runs on the **wrist** image, mirroring `WristDinoObservationBuilder` in `run_real_dino.sh`
 - **RL agent**: StateSAC + Transformer — identical hyperparameters to `run_real_dino.sh`
 - **Success**: rule-based `has_peg_inserted()` geometry check, no human labelling needed
