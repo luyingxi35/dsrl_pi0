@@ -110,3 +110,53 @@ def pi0_velocity_chunk_to_sim_actions(
         sim_action[7] = binarize_sim_gripper(float(action[7]))
         sim_actions.append(sim_action)
     return np.stack(sim_actions, axis=0)
+
+
+
+def pi0_vel_chunk_to_joint_pos_actions(
+    source_qpos: np.ndarray,
+    actions: np.ndarray,
+    action_scale: float = DEFAULT_SIM_ACTION_SCALE,
+    execution_steps: int = 6,
+    action_clip: float = SIM_ACTION_CLIP,
+) -> np.ndarray:
+    """Convert a pi0 velocity chunk to absolute joint-position targets.
+
+    Used with ManiSkill ``pd_joint_pos`` controller (normalize_action=False).
+    Integrates the first ``execution_steps`` velocity steps from ``source_qpos``
+    and returns absolute joint angles in radians.
+
+    Args:
+        source_qpos:     (>=7,) current joint positions [rad], read from env obs.
+        actions:         (H, >=8) pi0 output — normalised joint velocities [:7]
+                         and gripper command [7].
+        action_scale:    Scale on DROID's max joint delta (0.2 rad/step).
+                         Default 0.5 → 0.10 rad/step, matching evaluate_pi0_real.py.
+        execution_steps: Number of waypoints to return (cap at len(actions)).
+        action_clip:     Velocity clip bound before scaling.
+
+    Returns:
+        (N, 8) float32 where N = min(execution_steps, len(actions)):
+            [:, :7]  absolute joint angles [rad]  (feed directly to pd_joint_pos)
+            [:, 7]   binarised gripper ∈ {+1 open, -1 closed}  (ManiSkill convention)
+    """
+    max_joint_delta = DROID_MAX_JOINT_DELTA * float(action_scale)
+    qpos = np.asarray(source_qpos, dtype=np.float32).reshape(-1)
+    if qpos.shape[0] < 7:
+        raise ValueError(f"Expected source_qpos with at least 7 values, got {qpos.shape}")
+
+    actions_arr = np.asarray(actions, dtype=np.float32)
+    if actions_arr.ndim != 2 or actions_arr.shape[1] < 8:
+        raise ValueError(f"Expected pi0 actions shape (H, >=8), got {actions_arr.shape}")
+
+    n_steps = min(int(execution_steps), len(actions_arr))
+    running_joints = qpos[:7].copy()
+    result: list[np.ndarray] = []
+    for action in actions_arr[:n_steps]:
+        velocity = np.clip(action[:7], -float(action_clip), float(action_clip))
+        running_joints = running_joints + velocity * float(max_joint_delta)
+        step_action = np.empty((8,), dtype=np.float32)
+        step_action[:7] = running_joints                              # absolute [rad]
+        step_action[7]  = binarize_sim_gripper(float(action[7]))     # ±1
+        result.append(step_action)
+    return np.stack(result, axis=0)

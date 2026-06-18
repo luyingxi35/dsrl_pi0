@@ -19,7 +19,8 @@ MAX_ROLLOUT_STEPS=600
 QUERY_FREQ=8
 ACTION_SCALE=0.5
 OUTPUTDIR=./logs/pi0_eval_sim
-INSTRUCTION="pick up the peg and insert it vertically"
+INSTRUCTION="pick up the blue peg"
+# INSTRUCTION="pick up the peg and insert it vertically"
 WORKSPACE_BOUNDS_PATH="/home/gpu4/yingxi/dsrl_pi0/workspace_bounds.json"
 
 while [[ $# -gt 0 ]]; do
@@ -52,7 +53,7 @@ export LD_LIBRARY_PATH="${ALL_NVIDIA}:${LD_LIBRARY_PATH:-}"
     --checkpoint_path "${PI0_DROID_CKPT}" \
     --eval_episodes "${EVAL_EPISODES}" \
     --max_rollout_steps "${MAX_ROLLOUT_STEPS}" \
-    --query_freq "${QUERY_FREQ}" \
+    # --query_freq "${QUERY_FREQ}" \
     --action_scale "${ACTION_SCALE}" \
     --robofac_python "${ROBOFAC_PYTHON}" \
     --instruction "${INSTRUCTION}" \

@@ -24,7 +24,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from examples.envs.mani_skill_client import ManiSkillRemoteEnv
-from examples.sim_action_utils import RealTimeActionChunker, pi0_velocity_chunk_to_sim_actions
+from examples.sim_action_utils import pi0_vel_chunk_to_joint_pos_actions
 from examples.utils.real_robot_common import (
     RolloutResult,
     append_result,
@@ -47,7 +47,7 @@ RESULT_FIELDS = [
     "timestamp",
     "instruction",
     "checkpoint_path",
-    "query_freq",
+    "execution_steps",
     "max_rollout_steps",
     "action_scale",
     "robofac_python",
@@ -68,12 +68,20 @@ def _obs_to_pi0_input(
     ext_rgb: np.ndarray,
     wrist_rgb: np.ndarray,
     instruction: str,
+    use_exterior: bool = False,
 ) -> dict:
-    """Build pi0 DroidInputs without importing JAX-heavy sim training utilities."""
+    """Build pi0 DroidInputs without importing JAX-heavy sim training utilities.
+
+    Args:
+        use_exterior: If True, pass exterior (base_camera) image to pi0.
+                      Default False — only wrist camera, matching real eval default
+                      (evaluate_pi0_real.py --use_exterior_camera=0).
+                      DroidInputs automatically sets exterior to zeros + mask=False
+                      when the key is absent.
+    """
     from openpi_client import image_tools
 
-    return {
-        "observation/exterior_image_1_left": image_tools.convert_to_uint8(ext_rgb),
+    data = {
         "observation/wrist_image_left": image_tools.convert_to_uint8(wrist_rgb),
         "observation/joint_position": qpos[:7].astype(np.float32),
         "observation/gripper_position": np.array(
@@ -82,6 +90,9 @@ def _obs_to_pi0_input(
         ),
         "prompt": instruction,
     }
+    if use_exterior:
+        data["observation/exterior_image_1_left"] = image_tools.convert_to_uint8(ext_rgb)
+    return data
 
 
 def _send_msg(stream, obj: object) -> None:
@@ -206,49 +217,58 @@ def run_rollout(
     start_time = time.time()
     side_image_list: list[np.ndarray] = []
     wrist_image_list: list[np.ndarray] = []
-    action_chunker = RealTimeActionChunker(
-        action_horizon=args.action_horizon,
-        action_dim=8,
-        m=args.action_chunk_decay,
-    )
     success = False
     failure_reason = "timeout"
     env_steps = 0
 
     pbar = tqdm(total=args.max_rollout_steps, desc=f"pi0 sim episode {episode_id}", unit="step")
     try:
-        for t in range(args.max_rollout_steps):
+        while env_steps < args.max_rollout_steps:
+            # ── Observe + infer ───────────────────────────────────────────────
             qpos, ext_rgb, wrist_rgb = _extract_sim_obs(env_obs)
             side_image_list.append(ext_rgb)
             wrist_image_list.append(wrist_rgb)
 
-            pi0_obs = _obs_to_pi0_input(qpos, ext_rgb, wrist_rgb, args.instruction)
+            pi0_obs = _obs_to_pi0_input(qpos, ext_rgb, wrist_rgb, args.instruction,
+                                             use_exterior=bool(args.use_exterior_camera))
             actions = np.asarray(agent_dp.infer(pi0_obs)["actions"])
             if actions.ndim != 2 or actions.shape[-1] < 8:
-                raise RuntimeError(f"Expected pi0 actions shape (H, >=8), got {actions.shape}")
-            if len(actions) < args.action_horizon:
                 raise RuntimeError(
-                    f"--action_horizon ({args.action_horizon}) exceeds pi0 action horizon "
-                    f"({len(actions)})."
+                    f"Expected pi0 actions shape (H, >=8), got {actions.shape}"
                 )
-            sim_actions = pi0_velocity_chunk_to_sim_actions(
-                qpos, actions[: args.action_horizon], action_scale=args.action_scale
+
+            # ── Convert velocity chunk → absolute joint-position waypoints ────
+            # execution_steps waypoints, each = abs joint angles [rad] + gripper ±1
+            joint_pos_actions = pi0_vel_chunk_to_joint_pos_actions(
+                qpos, actions,
+                action_scale=args.action_scale,
+                execution_steps=args.execution_steps,
             )
-            action_8d = action_chunker.step(sim_actions)
-            env_obs, _reward, terminated, truncated, info = env.step(action_8d)
-            env_steps = t + 1
-            pbar.update(1)
 
-            # Workspace constraint check (pre/post-grasp bounding box)
-            if bool(info.get("workspace_violated", False)):
-                failure_reason = "workspace_" + info.get("phase", "pre_grasp")
-                break
+            # ── Execute waypoints ─────────────────────────────────────────────
+            done = False
+            for action_8d in joint_pos_actions:
+                if env_steps >= args.max_rollout_steps:
+                    break
+                env_obs, _reward, terminated, truncated, info = env.step(action_8d)
+                env_steps += 1
+                pbar.update(1)
 
-            if bool(info.get("success", False)):
-                success = True
-                failure_reason = ""
-                break
-            if bool(terminated) or bool(truncated):
+                # Collect image after each step for smooth video
+                _, ext_step, wrist_step = _extract_sim_obs(env_obs)
+                side_image_list.append(ext_step)
+                wrist_image_list.append(wrist_step)
+
+                if bool(info.get("success", False)):
+                    success = True
+                    failure_reason = ""
+                    done = True
+                    break
+                if bool(terminated) or bool(truncated):
+                    done = True
+                    break
+
+            if done:
                 break
     finally:
         pbar.close()
@@ -276,22 +296,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval_episodes", default=10, type=int)
     parser.add_argument("--max_rollout_steps", default=600, type=int)
     parser.add_argument(
-        "--query_freq",
         "--execution_steps",
-        dest="query_freq",
-        default=4,
+        default=6,
         type=int,
         help=(
-            "Legacy recorded query frequency. Sim eval now runs pi0 inference every "
-            "control step and temporally ensembles overlapping chunks."
+            "Number of joint-position waypoints to execute between pi0 inferences. "
+            "Matches evaluate_pi0_real.py default. Default: 6."
         ),
-    )
-    parser.add_argument("--action_horizon", default=8, type=int)
-    parser.add_argument(
-        "--action_chunk_decay",
-        default=0.01,
-        type=float,
-        help="Exponential decay m for real-time action chunk ensembling.",
     )
     parser.add_argument("--checkpoint_path", default=DEFAULT_CHECKPOINT_PATH)
     parser.add_argument("--robofac_python", default=DEFAULT_ROBOFAC_PYTHON)
@@ -301,10 +312,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="Scale on DROID max_joint_delta=0.2 rad/step. Default 0.5 => 0.1 rad/step.",
     )
+    parser.add_argument("--use_exterior_camera", default=0, type=int, choices=(0, 1),
+                        help=("Pass exterior (base_camera) image to pi0. "
+                              "Default 0 = wrist-only, matches real eval --use_exterior_camera=0."))
     parser.add_argument("--workspace_bounds_path",
-                        default="/home/gpu4/yingxi/dsrl_pi0/workspace_bounds.json",
-                        help="Path to workspace_bounds.json "
-                             "(default: calibrated bounds; set to empty string to disable)")
+                        default=None,  # workspace constraint is for SAC training; disable for pi0-only eval
+                        help="Path to workspace_bounds.json. Default None = disabled for pi0 eval.")
     parser.add_argument("--outputdir", default=None)
     return parser
 
@@ -314,12 +327,8 @@ def run_evaluation(args: argparse.Namespace) -> None:
         raise ValueError("--eval_episodes must be positive.")
     if args.max_rollout_steps <= 0:
         raise ValueError("--max_rollout_steps must be positive.")
-    if args.query_freq <= 0:
-        raise ValueError("--query_freq/--execution_steps must be positive.")
-    if args.action_horizon <= 0:
-        raise ValueError("--action_horizon must be positive.")
-    if args.action_chunk_decay < 0:
-        raise ValueError("--action_chunk_decay must be non-negative.")
+    if args.execution_steps <= 0:
+        raise ValueError("--execution_steps must be positive.")
     if args.action_scale <= 0:
         raise ValueError("--action_scale must be positive.")
     if not Path(args.checkpoint_path).exists():
@@ -351,7 +360,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
                 "timestamp": result.timestamp,
                 "instruction": args.instruction,
                 "checkpoint_path": args.checkpoint_path,
-                "query_freq": args.query_freq,
+                "execution_steps": args.execution_steps,
                 "max_rollout_steps": args.max_rollout_steps,
                 "action_scale": args.action_scale,
                 "robofac_python": args.robofac_python,

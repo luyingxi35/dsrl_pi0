@@ -11,7 +11,9 @@ Observation space (matches server _extract_obs):
     wrist : (128,128,3) uint8  — hand_camera  (wrist, panda_wristcam)
 
 Action space:
-    (8,) float32 in [-1, 1] — [arm_7d_vel, gripper] (panda_wristcam: 1 gripper cmd)
+    (8,) float32 — 7 absolute joint angles [rad] + 1 gripper (normalised [-1,1])
+    Arm:     unconstrained rad (pd_joint_pos controller, URDF limits apply server-side)
+    Gripper: [-1, 1] → [-0.01, 0.04] m  (+1 open, -1 closed)
 
 Optional workspace constraint:
     Pass workspace_bounds_path to enforce pre/post-grasp joint bounding boxes
@@ -46,7 +48,7 @@ DROID_RESET_QPOS = np.array(
         -4 * np.pi / 5,
         0.0,
         3 * np.pi / 5,
-        np.pi,
+        np.pi / 4,   # j7: Franka rest pose (π/4 ≈ 0.785 rad); π would exceed URDF limit 2.897
         0.04,
         0.04,
     ],
@@ -106,7 +108,15 @@ class ManiSkillRemoteEnv(gym.Env):
             "ext":   Box(0, 255,          _CAM_SHAPE,  dtype=np.uint8),
             "wrist": Box(0, 255,          _CAM_SHAPE,  dtype=np.uint8),
         })
-        self.action_space = Box(-2.0, 2.0, (8,), dtype=np.float32)   # panda_wristcam: 7 arm joints + 1 gripper
+        # pd_joint_pos: arm = absolute joint angles [rad] (Franka limits enforced server-side),
+        # gripper = normalised [-1, 1] → [-0.01, 0.04] m (+1 open, -1 closed).
+        _ARM_LOW  = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973], dtype=np.float32)
+        _ARM_HIGH = np.array([ 2.8973,  1.7628,  2.8973, -0.0698,  2.8973,  3.7525,  2.8973], dtype=np.float32)
+        self.action_space = Box(
+            low=np.concatenate([_ARM_LOW,  [-1.0]]),
+            high=np.concatenate([_ARM_HIGH, [ 1.0]]),
+            dtype=np.float32,
+        )
 
     # ── gym interface ──────────────────────────────────────────────────────────
 
