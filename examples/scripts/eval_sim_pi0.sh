@@ -20,6 +20,7 @@ QUERY_FREQ=8
 ACTION_SCALE=0.5
 OUTPUTDIR=./logs/pi0_eval_sim
 INSTRUCTION="pick up the peg and insert it vertically"
+WORKSPACE_BOUNDS_PATH="/home/gpu4/yingxi/dsrl_pi0/workspace_bounds.json"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -33,6 +34,7 @@ while [[ $# -gt 0 ]]; do
         --robofac_python) ROBOFAC_PYTHON="$2"; shift 2 ;;
         --dsrl_python) DSRL_PYTHON="$2"; shift 2 ;;
         --device_id) DEVICE_ID="$2"; shift 2 ;;
+        --workspace_bounds_path) WORKSPACE_BOUNDS_PATH="$2"; shift 2 ;;
         *) echo "Unknown arg: $1" >&2; exit 1 ;;
     esac
 done
@@ -54,4 +56,5 @@ export LD_LIBRARY_PATH="${ALL_NVIDIA}:${LD_LIBRARY_PATH:-}"
     --action_scale "${ACTION_SCALE}" \
     --robofac_python "${ROBOFAC_PYTHON}" \
     --instruction "${INSTRUCTION}" \
-    --outputdir "${OUTPUTDIR}"
+    --outputdir "${OUTPUTDIR}" \
+    ${WORKSPACE_BOUNDS_PATH:+--workspace_bounds_path "${WORKSPACE_BOUNDS_PATH}"}

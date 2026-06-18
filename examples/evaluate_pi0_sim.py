@@ -239,6 +239,11 @@ def run_rollout(
             env_steps = t + 1
             pbar.update(1)
 
+            # Workspace constraint check (pre/post-grasp bounding box)
+            if bool(info.get("workspace_violated", False)):
+                failure_reason = "workspace_" + info.get("phase", "pre_grasp")
+                break
+
             if bool(info.get("success", False)):
                 success = True
                 failure_reason = ""
@@ -296,6 +301,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="Scale on DROID max_joint_delta=0.2 rad/step. Default 0.5 => 0.1 rad/step.",
     )
+    parser.add_argument("--workspace_bounds_path",
+                        default="/home/gpu4/yingxi/dsrl_pi0/workspace_bounds.json",
+                        help="Path to workspace_bounds.json "
+                             "(default: calibrated bounds; set to empty string to disable)")
     parser.add_argument("--outputdir", default=None)
     return parser
 
@@ -320,7 +329,8 @@ def run_evaluation(args: argparse.Namespace) -> None:
     csv_path = outputdir / "eval_results.csv"
     logging.info("Writing pi0 sim evaluation outputs to %s", outputdir)
 
-    env = ManiSkillRemoteEnv(robofac_python=args.robofac_python)
+    env = ManiSkillRemoteEnv(robofac_python=args.robofac_python,
+                             workspace_bounds_path=args.workspace_bounds_path or None)
     agent_dp = load_pi0_policy(args.checkpoint_path)
     completed = 0
     successes = 0
