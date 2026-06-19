@@ -18,6 +18,7 @@ Key simplifications vs. train_utils_real.py (no hardware):
   - Direct env.step(); timeout = env truncation or max_timesteps reached
 """
 import csv
+from pathlib import Path
 import os
 from collections import deque
 
@@ -31,6 +32,30 @@ from jaxrl2.utils.noise_utils import make_full_horizon_noise
 # Reuse buffer insertion from train_utils_sim (identical logic, no modification needed)
 from examples.sim.train_utils import add_online_data_to_buffer  # noqa: F401
 from examples.sim.action_utils import pi0_vel_chunk_to_joint_pos_actions
+
+
+# ── Video helper ──────────────────────────────────────────────────────────────
+
+def _save_traj_video(
+    frames: list,
+    path: Path,
+    fps: float = 15.0,
+) -> None:
+    """Save a list of uint8 RGB frames as an mp4 video."""
+    if not frames:
+        return
+    try:
+        import numpy as _np
+        from moviepy.editor import ImageSequenceClip
+        from moviepy.video.io.ffmpeg_writer import ffmpeg_write_video
+        arr = _np.stack([_np.asarray(f, dtype=_np.uint8) for f in frames])
+        clip = ImageSequenceClip(list(arr), fps=fps)
+        ffmpeg_write_video(clip, str(path), fps, codec='libx264',
+                           audiofile=None, logger=None)
+        print(f'Saved rollout video: {path}')
+    except Exception as exc:
+        print(f'Warning: could not save rollout video {path}: {exc}')
+
 
 # ── Constants (mirrors train_real_dino.py) ─────────────────────────────────────
 PROPRIO_DIM           = 8
@@ -193,7 +218,7 @@ def _obs_to_pi0_input(qpos: np.ndarray, ext_rgb: np.ndarray,
 
 # ── Trajectory collection ──────────────────────────────────────────────────────
 
-def collect_traj(variant, agent, env, i, agent_dp, obs_builder, robometer_client=None):
+def collect_traj(variant, agent, env, i, agent_dp, obs_builder, robometer_client=None, video_dir=None):
     """Collect one trajectory in simulation.
 
     Mirrors train_utils_real.py:collect_traj() but simplified for sim:
@@ -214,6 +239,10 @@ def collect_traj(variant, agent, env, i, agent_dp, obs_builder, robometer_client
 
     env_obs, _ = env.reset()
 
+    # Video frame buffers (populated only when video_dir is set)
+    _side_frames:  list = []
+    _wrist_frames: list = []
+
     action_list  = []
     obs_list     = []
     image_buffer = []   # exterior camera (224x224x3 uint8) at each query step
@@ -222,6 +251,9 @@ def collect_traj(variant, agent, env, i, agent_dp, obs_builder, robometer_client
 
     for t in tqdm(range(max_timesteps)):
         qpos, ext_rgb, wrist_rgb = _extract_sim_obs(env_obs)
+        if video_dir is not None:
+            _side_frames.append(ext_rgb.copy())
+            _wrist_frames.append(wrist_rgb.copy())
         pi0_obs                  = _obs_to_pi0_input(qpos, ext_rgb, wrist_rgb, instruction)
 
         if t % query_frequency == 0:
@@ -274,6 +306,13 @@ def collect_traj(variant, agent, env, i, agent_dp, obs_builder, robometer_client
         if done:
             # env truncated due to max_episode_steps → timeout failure
             break
+
+    # Save first-rollout diagnostic videos
+    if video_dir is not None:
+        vdir = Path(video_dir)
+        vdir.mkdir(parents=True, exist_ok=True)
+        _save_traj_video(_side_frames,  vdir / 'traj_0_side.mp4')
+        _save_traj_video(_wrist_frames, vdir / 'traj_0_wrist.mp4')
 
     # Append final observation (after last step)
     qpos_last, ext_last, wrist_last = _extract_sim_obs(env_obs)
@@ -452,8 +491,10 @@ def trajwise_alternating_training_loop(
 
     with tqdm(total=variant.max_steps, initial=0) as pbar:
         while i <= variant.max_steps and not _converged:
+            _video_dir = variant.outputdir if total_num_traj == 0 else None
             traj = collect_traj(variant, agent, env, i, agent_dp, obs_builder,
-                               robometer_client=robometer_client)
+                               robometer_client=robometer_client,
+                               video_dir=_video_dir)
             total_num_traj += 1
             successes      += int(traj["is_success"])
             add_online_data_to_buffer(variant, traj, online_replay_buffer)

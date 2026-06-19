@@ -49,7 +49,7 @@ from examples.sim.train_utils_dino_dense import (
 from examples.sim.envs.mani_skill_client import ManiSkillRemoteEnv
 from examples.sim.robometer_reward_client import RobometerRewardClient
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 

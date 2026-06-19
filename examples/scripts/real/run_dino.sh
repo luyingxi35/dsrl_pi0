@@ -48,7 +48,7 @@ POLICY_PORT="8000"
 # max_joint_speed_rad_s: NUC-side safety cap. 0.1 is very conservative; increase to
 #   1.5 for normal training speed. Match action_scale: e.g. action_scale=0.5 with
 #   max_joint_speed_rad_s=1.5 allows up to 1.0 rad/step at 10 Hz without capping.
-ACTION_SCALE="0.5"
+ACTION_SCALE="1.0"
 MAX_JOINT_SPEED="0.3"
 
 
@@ -71,7 +71,7 @@ python3 examples/real/launch_train_dino.py \
 --log_interval 100 \
 --multi_grad_step 5 \
 --action_magnitude 2.0 \
---instruction 'pick up the blue peg' \
+--instruction 'pick up the blue and insert it into the hole' \
 --query_freq 8 \
 --rl_noise_horizon 8 \
 --hidden_dims 1024 \

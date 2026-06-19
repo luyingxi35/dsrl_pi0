@@ -131,8 +131,8 @@ for idx in "${!SEEDS_ARR[@]}"; do
             --multi_grad_step 5 \
             --num_initial_traj_collect 5 \
             --action_magnitude 2.0 \
-            --action_scale 0.5 \
-            --instruction 'pick up the peg and insert it vertically into the hole' \
+            --action_scale 1.0 \
+            --instruction 'pick up the peg and insert it into the hole' \
             --query_freq 8 \
             --rl_noise_horizon 8 \
             --network_type transformer \

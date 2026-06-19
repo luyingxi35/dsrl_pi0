@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from jaxrl2.utils.noise_utils import make_full_horizon_noise
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 EXAMPLES_DIR = Path(__file__).resolve().parent

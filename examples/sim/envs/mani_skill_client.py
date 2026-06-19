@@ -40,15 +40,19 @@ FIXED_HOLE_POSE = {
     "q": PEG_VERTICAL_QUAT,
 }
 DROID_PEG_RADIUS_RANGE = (0.12, 0.18)
+# Robot initial joint config — tuned to start closer to the peg working area.
+# j1 = -0.45 rad: rotates base ~25.8° right → EEF y ≈ -0.098 m (above peg area)
+# j2 = -0.40 rad: was -π/5 ≈ -0.628; slightly less backward, EEF z ≈ 0.304 m
+# Measured EEF world: [-0.274, -0.098, +0.304]; d_peg ≈ 0.058 m (vs 0.201 m before)
 DROID_RESET_QPOS = np.array(
     [
-        0.0,
-        -np.pi / 5,
+        0.0,              # j1: rotate right toward peg area
+        -0.40,              # j2: was -np.pi/5; slightly less backward lean
         0.0,
         -4 * np.pi / 5,
         0.0,
         3 * np.pi / 5,
-        np.pi / 4,   # j7: Franka rest pose (π/4 ≈ 0.785 rad); π would exceed URDF limit 2.897
+        np.pi / 4,          # j7: Franka rest pose (π/4 ≈ 0.785 rad)
         0.04,
         0.04,
     ],

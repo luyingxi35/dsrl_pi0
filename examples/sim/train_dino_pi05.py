@@ -1,17 +1,16 @@
 #!/usr/bin/env python
-"""Simulation DSRL training: PegInsertionVertical + pi0_droid + StateSAC + DINOv2.
+"""Simulation DSRL training: PegInsertionVertical + pi05_droid + StateSAC + DINOv2.
 
-Architecture is **identical to train_real_dino.py** — the only differences are:
-  - env runs as a subprocess (robofac conda env) via ManiSkillRemoteEnv
-  - pi0 inference is local (no network policy server)
-  - success is judged automatically by has_peg_inserted()
+Architecture is **identical to train_dino.py** — the only differences are:
+  - uses pi05_droid openpi config (pi05=True, action_horizon=15)
+  - checkpoint loaded from /opt/yingxi/pi05_droid
 
-Compared to train_sim_dino.py (v1):
-  ✓ wrist camera image used (panda_wristcam hand_camera, NOT zeros)
-  ✓ DINOv2 runs on wrist image (matches real-robot WristDinoObservationBuilder)
-  ✓ pi0 wrist input is real image (matches real-robot get_pi0_input_train)
-  ✓ ManiSkill/sapien deps fully isolated in robofac subprocess
-  ✓ No sapien/mani_skill imports in dsrl_pi0 env → zero dependency conflicts
+Observation space mirrors train_dino.py (unchanged):
+  STATE_DIM = 8 + 2048 + 384 = 2440
+  PI0_NOISE_DIM = 32  (same as pi0; pi0.5 action_dim=32)
+
+rl_noise_horizon must be set to 15 to match pi0.5 action_horizon.
+query_freq can remain at 8 (execute 8 of 15 steps per pi0.5 call).
 """
 import os
 import sys
@@ -124,10 +123,8 @@ def main(variant):
     )
 
     # ── Environments (subprocess) ───────────────────────────────────────────────
-    # ManiSkill/sapien run in robofac env; zero dependency pollution in dsrl_pi0.
-    # panda_wristcam provides both base_camera (exterior) and hand_camera (wrist).
     robofac_python = getattr(variant, "robofac_python",
-                             "/home/gpu4/miniconda3/envs/robofac/bin/python3")
+                             "/opt/yingxi/envs/robofac/bin/python3")
     workspace_bounds = getattr(variant, "workspace_bounds_path", None)
     env      = ManiSkillRemoteEnv(robofac_python=robofac_python,
                                   workspace_bounds_path=workspace_bounds)
@@ -138,7 +135,7 @@ def main(variant):
         variant.max_timesteps = 600
     variant.env_max_reward = 1
 
-    # ── SAC agent (init BEFORE pi0 to claim cuSolver handle first) ──────────────
+    # ── SAC agent (init BEFORE pi0.5 to claim cuSolver handle first) ────────────
     dummy_env     = DummyEnv(variant)
     sample_obs    = add_batch_dim(dummy_env.observation_space.sample())
     sample_action = add_batch_dim(dummy_env.action_space.sample())
@@ -147,12 +144,12 @@ def main(variant):
 
     agent = StateSACLearner(variant.seed, sample_obs, sample_action, **kwargs)
 
-    # ── pi0_droid policy (local, frozen) ────────────────────────────────────────
-    pi0_cfg  = openpi_config.get_config("pi0_droid")
+    # ── pi05_droid policy (local, frozen) ────────────────────────────────────────
+    pi05_cfg = openpi_config.get_config("pi05_droid")
     agent_dp = openpi_policy_config.create_trained_policy(
-        pi0_cfg, variant.checkpoint_path
+        pi05_cfg, variant.checkpoint_path
     )
-    print(f"Loaded pi0_droid from: {variant.checkpoint_path}")
+    print(f"Loaded pi05_droid from: {variant.checkpoint_path}")
 
     # ── DINOv2 feature extractor ────────────────────────────────────────────────
     dino_extractor = WristDinoFeatureExtractor(variant.dino_model, variant.dino_device)

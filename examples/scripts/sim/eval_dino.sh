@@ -20,9 +20,9 @@ EVAL_EPISODES=10
 MAX_ROLLOUT_STEPS=600
 QUERY_FREQ=8
 RL_NOISE_HORIZON=8
-ACTION_SCALE=0.5
+ACTION_SCALE=1.0
 OUTPUTDIR=./logs/dino_eval_sim
-INSTRUCTION="pick up the peg and insert it vertically"
+INSTRUCTION="pick up the peg and insert it into the hole"
 DINO_MODEL=facebook/dinov2-small
 DINO_DEVICE=auto
 
@@ -64,7 +64,7 @@ DSRL_SITE_PACKAGES="$("${DSRL_PYTHON}" -c 'import site; print(site.getsitepackag
 ALL_NVIDIA=$(find "${DSRL_SITE_PACKAGES}/nvidia" -name lib -type d 2>/dev/null | tr '\n' ':')
 export LD_LIBRARY_PATH="${ALL_NVIDIA}:${LD_LIBRARY_PATH:-}"
 
-"${DSRL_PYTHON}" examples/evaluate_policy_sim_dino.py \
+"${DSRL_PYTHON}" sim/evaluate_policy_dino.py \
     --restore_path "${RESTORE_PATH}" \
     --checkpoint_path "${PI0_DROID_CKPT}" \
     --eval_episodes "${EVAL_EPISODES}" \

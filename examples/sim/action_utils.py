@@ -71,7 +71,21 @@ class RealTimeActionChunker:
 
 
 def binarize_sim_gripper(action_value: float) -> float:
-    return SIM_GRIPPER_CLOSED if float(action_value) > 0.5 else SIM_GRIPPER_OPEN
+    """Binarise a DROID gripper action value to a ManiSkill gripper command.
+
+    DROID convention: action_value in [0, 1]
+      > 0.5  →  open  (desired gripper position = open)
+      < 0.5  →  close (desired gripper position = closed)
+
+    ManiSkill PDJointPosMimicController (normalize_action=True):
+      +1.0  →  target = 0.04 m  (open)
+      -1.0  →  target = -0.01 m (closed)
+
+    Real-robot parity: binarize_and_clip_action() in real_robot_common.py uses
+      gripper = 1.0 if action[-1] > 0.5 else 0.0
+    so action > 0.5 → open in both real and sim.
+    """
+    return SIM_GRIPPER_OPEN if float(action_value) > 0.5 else SIM_GRIPPER_CLOSED
 
 
 def pi0_velocity_chunk_to_sim_actions(
@@ -100,6 +114,10 @@ def pi0_velocity_chunk_to_sim_actions(
         raise ValueError(f"Expected pi0 actions shape (H, >=8), got {actions_arr.shape}")
 
     running_joints = qpos[:7].astype(np.float32).copy()
+    # Chunk-level gripper decision: binarize the mean over the whole chunk
+    # to avoid within-chunk oscillation (e.g., pi0.5's long action_horizon=15
+    # may predict a gripper transition mid-chunk).
+    chunk_gripper = binarize_sim_gripper(float(np.mean(actions_arr[:, 7])))
     sim_actions: list[np.ndarray] = []
     for action in actions_arr:
         velocity = np.clip(action[:7], -float(action_clip), float(action_clip))
@@ -107,7 +125,7 @@ def pi0_velocity_chunk_to_sim_actions(
         delta = running_joints - qpos[:7]
         sim_action = np.empty((8,), dtype=np.float32)
         sim_action[:7] = delta / MANISKILL_JOINT_DELTA
-        sim_action[7] = binarize_sim_gripper(float(action[7]))
+        sim_action[7] = chunk_gripper
         sim_actions.append(sim_action)
     return np.stack(sim_actions, axis=0)
 
@@ -151,13 +169,19 @@ def pi0_vel_chunk_to_joint_pos_actions(
 
     n_steps = min(int(execution_steps), len(actions_arr))
     running_joints = qpos[:7].copy()
+    # Chunk-level gripper decision: binarize the mean over the executed steps.
+    # Pi0.5 (action_horizon=15) may predict a gripper-state transition within
+    # the 15-step chunk; applying binarize per-step causes rapid open/close
+    # oscillation. A single decision per chunk matches real-robot behaviour
+    # where the gripper command is held constant for the execution window.
+    chunk_gripper = binarize_sim_gripper(float(np.mean(actions_arr[:n_steps, 7])))
     result: list[np.ndarray] = []
     for action in actions_arr[:n_steps]:
         velocity = np.clip(action[:7], -float(action_clip), float(action_clip))
         running_joints = running_joints + velocity * float(max_joint_delta)
         step_action = np.empty((8,), dtype=np.float32)
-        step_action[:7] = running_joints                              # absolute [rad]
-        step_action[7]  = binarize_sim_gripper(float(action[7]))     # ±1
+        step_action[:7] = running_joints   # absolute [rad]
+        step_action[7]  = chunk_gripper    # ±1, same for all steps in this chunk
         result.append(step_action)
     return np.stack(result, axis=0)
 

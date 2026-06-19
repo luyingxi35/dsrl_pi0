@@ -19,7 +19,7 @@ from jaxrl2.utils.wandb_logger import WandBLogger, create_exp_name
 
 from examples.real.train_utils import trajwise_alternating_training_loop
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 

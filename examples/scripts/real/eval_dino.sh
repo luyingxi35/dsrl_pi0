@@ -19,7 +19,7 @@ EXTERNAL_CAMERA="right"
 POLICY_HOST="127.0.0.1"
 POLICY_PORT="8000"
 
-ACTION_SCALE="0.5"
+ACTION_SCALE="1.0"
 MAX_JOINT_SPEED="0.3"
 # DSRL eval timing modes:
 #   low_watermark: Version 1, refill waypoints before the controller runs dry.
@@ -30,7 +30,7 @@ MIN_FUTURE_HORIZON_S="0.25"
 
 python3 examples/real/evaluate_policy.py \
 --restore_path ./logs/DSRL_pi0_FrankaDroid/dsrl_pi0_real_dino_2026_06_13_15_37_49_0000--s-0 \
---instruction "pick up the blue peg" \
+--instruction "pick up the blue peg and insert it into the hole" \
 --eval_episodes 10 \
 --max_duration_s 60.0 \
 --max_rollout_steps 600 \

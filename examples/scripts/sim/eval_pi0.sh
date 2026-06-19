@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../../.."
 
 DSRL_PYTHON=/opt/yingxi/envs/dsrl_pi0/bin/python
 ROBOFAC_PYTHON=/opt/yingxi/envs/robofac/bin/python3
@@ -17,10 +17,9 @@ DEVICE_ID=0
 EVAL_EPISODES=10
 MAX_ROLLOUT_STEPS=600
 QUERY_FREQ=8
-ACTION_SCALE=0.5
+ACTION_SCALE=1.0
 OUTPUTDIR=./logs/pi0_eval_sim
-INSTRUCTION="pick up the blue peg"
-# INSTRUCTION="pick up the peg and insert it vertically"
+INSTRUCTION="pick up the peg and insert it vertically"
 WORKSPACE_BOUNDS_PATH="/home/gpu4/yingxi/dsrl_pi0/workspace_bounds.json"
 
 while [[ $# -gt 0 ]]; do
@@ -49,11 +48,10 @@ DSRL_SITE_PACKAGES="$("${DSRL_PYTHON}" -c 'import site; print(site.getsitepackag
 ALL_NVIDIA=$(find "${DSRL_SITE_PACKAGES}/nvidia" -name lib -type d 2>/dev/null | tr '\n' ':')
 export LD_LIBRARY_PATH="${ALL_NVIDIA}:${LD_LIBRARY_PATH:-}"
 
-"${DSRL_PYTHON}" examples/evaluate_pi0_sim.py \
+"${DSRL_PYTHON}" examples/sim/evaluate_pi0.py \
     --checkpoint_path "${PI0_DROID_CKPT}" \
     --eval_episodes "${EVAL_EPISODES}" \
     --max_rollout_steps "${MAX_ROLLOUT_STEPS}" \
-    # --query_freq "${QUERY_FREQ}" \
     --action_scale "${ACTION_SCALE}" \
     --robofac_python "${ROBOFAC_PYTHON}" \
     --instruction "${INSTRUCTION}" \

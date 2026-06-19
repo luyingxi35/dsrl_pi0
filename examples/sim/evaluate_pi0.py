@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -109,7 +109,7 @@ def _recv_msg(stream) -> object:
     return pickle.loads(stream.read(n))
 
 
-def _load_pi0_policy_in_worker(checkpoint_path: str):
+def _load_pi0_policy_in_worker(checkpoint_path: str, config_name: str = "pi0_droid"):
     checkpoint = Path(checkpoint_path)
     if not checkpoint.exists():
         raise FileNotFoundError(f"pi0 checkpoint path does not exist: {checkpoint_path}")
@@ -117,15 +117,15 @@ def _load_pi0_policy_in_worker(checkpoint_path: str):
     from openpi.policies import policy_config as openpi_policy_config
     from openpi.training import config as openpi_config
 
-    pi0_cfg = openpi_config.get_config("pi0_droid")
+    pi0_cfg = openpi_config.get_config(config_name)
     policy = openpi_policy_config.create_trained_policy(pi0_cfg, checkpoint_path)
-    logging.info("Loaded pi0_droid from %s", checkpoint_path)
+    logging.info("Loaded %s from %s", config_name, checkpoint_path)
     return policy
 
 
-def run_policy_worker(checkpoint_path: str) -> None:
+def run_policy_worker(checkpoint_path: str, config_name: str = "pi0_droid") -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, force=True)
-    policy = _load_pi0_policy_in_worker(checkpoint_path)
+    policy = _load_pi0_policy_in_worker(checkpoint_path, config_name)
     while True:
         try:
             msg = _recv_msg(sys.stdin.buffer)
@@ -148,11 +148,12 @@ def run_policy_worker(checkpoint_path: str) -> None:
 class LocalPi0Policy:
     """Small subprocess wrapper around local OpenPI to isolate JAX/CUDA runtime."""
 
-    def __init__(self, checkpoint_path: str):
+    def __init__(self, checkpoint_path: str, config_name: str = "pi0_droid"):
         if not Path(checkpoint_path).exists():
             raise FileNotFoundError(f"pi0 checkpoint path does not exist: {checkpoint_path}")
+        self._config_name = config_name
         self._proc = subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), "--_policy_worker", checkpoint_path],
+            [sys.executable, str(Path(__file__).resolve()), "--_policy_worker", checkpoint_path, self._config_name],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             start_new_session=True,
@@ -197,9 +198,9 @@ class LocalPi0Policy:
                 pass
 
 
-def load_pi0_policy(checkpoint_path: str):
-    policy = LocalPi0Policy(checkpoint_path)
-    logging.info("Started local pi0_droid worker for %s", checkpoint_path)
+def load_pi0_policy(checkpoint_path: str, config_name: str = "pi0_droid"):
+    policy = LocalPi0Policy(checkpoint_path, config_name)
+    logging.info("Started local %s worker for %s", config_name, checkpoint_path)
     return policy
 
 
@@ -232,6 +233,16 @@ def run_rollout(
             pi0_obs = _obs_to_pi0_input(qpos, ext_rgb, wrist_rgb, args.instruction,
                                              use_exterior=bool(args.use_exterior_camera))
             actions = np.asarray(agent_dp.infer(pi0_obs)["actions"])
+            # Debug: log raw gripper values from the action chunk.
+            # Run with LOG_LEVEL=DEBUG to see: helps verify gripper convention.
+            gripper_chunk = actions[:args.execution_steps, 7]
+            logging.debug(
+                "step=%d gripper_chunk[:%d]: min=%.3f max=%.3f mean=%.3f → %s",
+                env_steps, args.execution_steps,
+                float(gripper_chunk.min()), float(gripper_chunk.max()),
+                float(gripper_chunk.mean()),
+                "OPEN" if gripper_chunk.mean() > 0.5 else "CLOSED",  # DROID: >0.5=open
+            )
             if actions.ndim != 2 or actions.shape[-1] < 8:
                 raise RuntimeError(
                     f"Expected pi0 actions shape (H, >=8), got {actions.shape}"
@@ -319,6 +330,11 @@ def build_parser() -> argparse.ArgumentParser:
                         default=None,  # workspace constraint is for SAC training; disable for pi0-only eval
                         help="Path to workspace_bounds.json. Default None = disabled for pi0 eval.")
     parser.add_argument("--outputdir", default=None)
+    parser.add_argument(
+        "--config_name",
+        default="pi0_droid",
+        help="OpenPI training config name. Use pi05_droid for pi0.5 checkpoints.",
+    )
     return parser
 
 
@@ -340,7 +356,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
 
     env = ManiSkillRemoteEnv(robofac_python=args.robofac_python,
                              workspace_bounds_path=args.workspace_bounds_path or None)
-    agent_dp = load_pi0_policy(args.checkpoint_path)
+    agent_dp = load_pi0_policy(args.checkpoint_path, args.config_name)
     completed = 0
     successes = 0
     try:
@@ -387,7 +403,8 @@ def run_evaluation(args: argparse.Namespace) -> None:
 
 def main() -> None:
     if len(sys.argv) >= 3 and sys.argv[1] == "--_policy_worker":
-        run_policy_worker(sys.argv[2])
+        _cfg = sys.argv[3] if len(sys.argv) >= 4 else "pi0_droid"
+        run_policy_worker(sys.argv[2], _cfg)
         return
     parser = build_parser()
     args = parser.parse_args()

@@ -1,17 +1,13 @@
 #!/usr/bin/env python
-"""Simulation DSRL training: PegInsertionVertical + pi0_droid + StateSAC + DINOv2.
+"""Simulation DSRL training (dense reward): PegInsertionVertical + pi05_droid + StateSAC + DINOv2.
 
-Architecture is **identical to train_real_dino.py** — the only differences are:
-  - env runs as a subprocess (robofac conda env) via ManiSkillRemoteEnv
-  - pi0 inference is local (no network policy server)
-  - success is judged automatically by has_peg_inserted()
+Dense reward = binary -1/0 reward + Robometer progress(t).
 
-Compared to train_sim_dino.py (v1):
-  ✓ wrist camera image used (panda_wristcam hand_camera, NOT zeros)
-  ✓ DINOv2 runs on wrist image (matches real-robot WristDinoObservationBuilder)
-  ✓ pi0 wrist input is real image (matches real-robot get_pi0_input_train)
-  ✓ ManiSkill/sapien deps fully isolated in robofac subprocess
-  ✓ No sapien/mani_skill imports in dsrl_pi0 env → zero dependency conflicts
+Architecture is **identical to train_dino_dense.py** — the only differences are:
+  - uses pi05_droid openpi config (pi05=True, action_horizon=15)
+  - checkpoint loaded from /opt/yingxi/pi05_droid
+
+rl_noise_horizon must be set to 15 to match pi0.5 action_horizon.
 """
 import os
 import sys
@@ -36,7 +32,7 @@ from jaxrl2.data import ReplayBuffer
 from jaxrl2.utils.general_utils import add_batch_dim
 from jaxrl2.utils.wandb_logger import WandBLogger, create_exp_name
 
-from examples.sim.train_utils_dino import (
+from examples.sim.train_utils_dino_dense import (
     STATE_DIM,
     PI0_NOISE_DIM,
     WristDinoFeatureExtractor,
@@ -44,6 +40,7 @@ from examples.sim.train_utils_dino import (
     trajwise_alternating_training_loop,
 )
 from examples.sim.envs.mani_skill_client import ManiSkillRemoteEnv
+from examples.sim.robometer_reward_client import RobometerRewardClient
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -124,10 +121,8 @@ def main(variant):
     )
 
     # ── Environments (subprocess) ───────────────────────────────────────────────
-    # ManiSkill/sapien run in robofac env; zero dependency pollution in dsrl_pi0.
-    # panda_wristcam provides both base_camera (exterior) and hand_camera (wrist).
     robofac_python = getattr(variant, "robofac_python",
-                             "/home/gpu4/miniconda3/envs/robofac/bin/python3")
+                             "/opt/yingxi/envs/robofac/bin/python3")
     workspace_bounds = getattr(variant, "workspace_bounds_path", None)
     env      = ManiSkillRemoteEnv(robofac_python=robofac_python,
                                   workspace_bounds_path=workspace_bounds)
@@ -138,7 +133,7 @@ def main(variant):
         variant.max_timesteps = 600
     variant.env_max_reward = 1
 
-    # ── SAC agent (init BEFORE pi0 to claim cuSolver handle first) ──────────────
+    # ── SAC agent (init BEFORE pi0.5 to claim cuSolver handle first) ────────────
     dummy_env     = DummyEnv(variant)
     sample_obs    = add_batch_dim(dummy_env.observation_space.sample())
     sample_action = add_batch_dim(dummy_env.action_space.sample())
@@ -147,16 +142,37 @@ def main(variant):
 
     agent = StateSACLearner(variant.seed, sample_obs, sample_action, **kwargs)
 
-    # ── pi0_droid policy (local, frozen) ────────────────────────────────────────
-    pi0_cfg  = openpi_config.get_config("pi0_droid")
+    # ── pi05_droid policy (local, frozen) ────────────────────────────────────────
+    pi05_cfg = openpi_config.get_config("pi05_droid")
     agent_dp = openpi_policy_config.create_trained_policy(
-        pi0_cfg, variant.checkpoint_path
+        pi05_cfg, variant.checkpoint_path
     )
-    print(f"Loaded pi0_droid from: {variant.checkpoint_path}")
+    print(f"Loaded pi05_droid from: {variant.checkpoint_path}")
 
     # ── DINOv2 feature extractor ────────────────────────────────────────────────
     dino_extractor = WristDinoFeatureExtractor(variant.dino_model, variant.dino_device)
     obs_builder    = SimDinoObservationBuilder(dino_extractor)
+
+    # ── Robometer reward client ──────────────────────────────────────────────────
+    robometer_client = RobometerRewardClient(
+        robometer_python=getattr(variant, "robometer_python",
+                                 "/opt/yingxi/envs/robometer/bin/python3"),
+        checkpoint_path=getattr(variant, "robometer_checkpoint_path",
+                                "/opt/yingxi/checkpoint-400"),
+        base_model_id=getattr(variant, "robometer_base_model_id",
+                              "/opt/caoyuhang/Pretrained_models/Qwen3-VL-4B-Instruct"),
+    )
+
+    import atexit, signal as _signal
+    atexit.register(robometer_client.close)
+
+    def _sigterm_handler(sig, frame):
+        robometer_client.close()
+        env.close()
+        eval_env.close()
+        raise SystemExit(0)
+
+    _signal.signal(_signal.SIGTERM, _sigterm_handler)
 
     # ── Replay buffer ───────────────────────────────────────────────────────────
     online_buffer_size   = max(2 * variant.max_steps // max(variant.multi_grad_step, 1), 10000)
@@ -186,11 +202,13 @@ def main(variant):
             shard_fn=shard_fn,
             agent_dp=agent_dp,
             obs_builder=obs_builder,
+            robometer_client=robometer_client,
             eval_env_step_interval=getattr(variant, "eval_env_step_interval", -1),
             stop_success_rate=getattr(variant, "stop_success_rate", 0.95),
             stop_window=getattr(variant, "stop_window", 2),
             eval_csv_path=eval_csv,
         )
     finally:
+        robometer_client.close()
         env.close()
         eval_env.close()
