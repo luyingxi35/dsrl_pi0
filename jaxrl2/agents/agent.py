@@ -50,7 +50,7 @@ class Agent(object):
         return None
 
     def save_checkpoint(self, dir, step, keep_every_n_steps):
-        checkpoints.save_checkpoint(dir, self._save_dict, step, prefix='checkpoint', overwrite=False, keep_every_n_steps=keep_every_n_steps)
+        checkpoints.save_checkpoint(dir, self._save_dict, step, prefix='checkpoint', overwrite=True, keep_every_n_steps=keep_every_n_steps)
 
     def restore_checkpoint(self, dir):
         raise NotImplementedError
