@@ -236,3 +236,66 @@ def pi0_action_as_joint_pos(
         step_action[7]  = binarize_sim_gripper(float(action[7]))
         result.append(step_action)
     return np.stack(result, axis=0)
+
+
+def pi0_vel_to_delta_actions(
+    actions: np.ndarray,
+    action_scale: float = DEFAULT_SIM_ACTION_SCALE,
+    execution_steps: int = 6,
+    action_clip: float = SIM_ACTION_CLIP,
+) -> np.ndarray:
+    """Convert a pi0 velocity chunk directly to pd_joint_delta_pos actions.
+
+    Unlike ``pi0_vel_chunk_to_joint_pos_actions`` which integrates velocity
+    into absolute positions (requires ``pd_joint_pos`` controller), this
+    function emits **per-step deltas** suitable for the ``pd_joint_delta_pos``
+    ManiSkill controller.
+
+    The ManiSkill ``pd_joint_delta_pos`` controller (normalize_action=True,
+    bounds ±0.1 rad) maps input ±1 → actual delta of ±0.1 rad per step.
+    pi0 DROID velocity ±1 scaled by (action_scale × DROID_MAX_JOINT_DELTA)
+    gives the desired delta in rad.  Dividing by the controller bound (0.1)
+    yields the normalised input:
+
+        normalised_delta = clip(vel, ±1) × action_scale × DROID_MAX_JOINT_DELTA / 0.1
+
+    With the defaults (action_scale=0.5, DROID_MAX_JOINT_DELTA=0.2):
+        normalised_delta = clip(vel, ±1) × 1.0   ← identity mapping!
+
+    So the pi0 velocity output IS the normalised delta for the controller.
+
+    Args:
+        actions:         (H, >=8) pi0 output — normalised joint velocities [:7]
+                         and gripper command [7].
+        action_scale:    Velocity scale (0.5 = DROID default, safe speed).
+        execution_steps: Number of waypoints to return (cap at len(actions)).
+        action_clip:     Velocity clip bound.
+
+    Returns:
+        (N, 8) float32:
+            [:, :7]  normalised arm delta ∈ [-1, 1]
+                     → actual delta = value × 0.1 rad/step (pd_joint_delta_pos)
+            [:, 7]   binarised gripper ∈ {+1 open, -1 closed}
+
+    Note:
+        The real-robot parity: real uses binarize_and_clip_action() where
+        action[-1] > 0.5 → gripper = 1.0 (open).  We follow the same rule.
+    """
+    actions_arr = np.asarray(actions, dtype=np.float32)
+    if actions_arr.ndim != 2 or actions_arr.shape[1] < 8:
+        raise ValueError(f"Expected pi0 actions shape (H, >=8), got {actions_arr.shape}")
+
+    n_steps = min(int(execution_steps), len(actions_arr))
+    # Normalised delta = vel × action_scale × DROID_MAX_JOINT_DELTA / 0.1
+    # = vel × action_scale × 2.0
+    scale = float(action_scale) * DROID_MAX_JOINT_DELTA / 0.1  # 0.5 × 0.2 / 0.1 = 1.0 (default)
+
+    result: list[np.ndarray] = []
+    for action in actions_arr[:n_steps]:
+        vel = np.clip(action[:7], -float(action_clip), float(action_clip))
+        normalised = np.clip(vel * scale, -1.0, 1.0)   # clip in case scale > 1
+        step_action = np.empty((8,), dtype=np.float32)
+        step_action[:7] = normalised
+        step_action[7]  = binarize_sim_gripper(float(action[7]))
+        result.append(step_action)
+    return np.stack(result, axis=0)

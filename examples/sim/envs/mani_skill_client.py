@@ -77,6 +77,7 @@ class ManiSkillRemoteEnv(gym.Env):
         randomize_peg_pose: bool = True,
         peg_radius_range: tuple[float, float] = DROID_PEG_RADIUS_RANGE,
         workspace_bounds_path: "str | None" = None,
+        control_mode: str = "pd_joint_pos",
     ):
         self._reset_options = {}
         if reset_qpos is not None:
@@ -99,6 +100,8 @@ class ManiSkillRemoteEnv(gym.Env):
         _server_cmd = [robofac_python, server_script]
         if workspace_bounds_path is not None:
             _server_cmd += ["--workspace_bounds", workspace_bounds_path]
+        if control_mode != "pd_joint_pos":
+            _server_cmd += ["--control_mode", control_mode]
         self._proc = subprocess.Popen(
             _server_cmd,
             stdin=subprocess.PIPE,

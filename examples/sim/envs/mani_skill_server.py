@@ -103,7 +103,13 @@ import gymnasium as gym   # noqa: E402 – must come after env registration
 # Uses parse_known_args so the server ignores any unknown flags.
 _ws_parser = argparse.ArgumentParser(add_help=False)
 _ws_parser.add_argument("--workspace_bounds", default=None)
+_ws_parser.add_argument(
+    "--control_mode",
+    default="pd_joint_pos",
+    help="ManiSkill control mode. Default pd_joint_pos. Use pd_joint_delta_pos for velocity-as-delta.",
+)
 _ws_args, _ = _ws_parser.parse_known_args()
+_CONTROL_MODE = _ws_args.control_mode
 
 _WORKSPACE_BOUNDS = None
 if _ws_args.workspace_bounds:
@@ -216,7 +222,7 @@ env = gym.make(
     render_mode="rgb_array",
     num_envs=1,
     robot_uids="panda_wristcam",
-    control_mode="pd_joint_pos",
+    control_mode=_CONTROL_MODE,
     sensor_configs={
         # base_camera: exterior side-view, aligned to real camera pose + FOV
         "base_camera": dict(width=224, height=224, fov=1.0, pose=_EXT_CAM_POSE),
