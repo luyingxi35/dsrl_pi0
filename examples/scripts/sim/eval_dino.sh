@@ -2,8 +2,8 @@
 # Evaluate DSRL StateSAC + pi0_droid in ManiSkill simulation.
 #
 # Usage:
-#   bash examples/scripts/eval_sim_dino.sh --restore_path ./logs/DSRL_pi0_SimDino/<run_dir>
-#   bash examples/scripts/eval_sim_dino.sh --restore_path <run_dir> --eval_episodes 3
+#   bash examples/scripts/sim/eval_dino.sh --restore_path ./logs/DSRL_pi0_SimDino/<run_dir>
+#   bash examples/scripts/sim/eval_dino.sh --restore_path <run_dir> --eval_episodes 3
 
 set -euo pipefail
 

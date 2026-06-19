@@ -50,8 +50,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from examples.sim_action_utils import RealTimeActionChunker, pi0_velocity_chunk_to_sim_actions
-from examples.utils.real_robot_common import (
+from examples.sim.action_utils import RealTimeActionChunker, pi0_velocity_chunk_to_sim_actions
+from examples.real.utils.real_robot_common import (
     binarize_and_clip_action,
     integrate_joint_velocity_actions,
 )
@@ -110,7 +110,7 @@ def make_mock_pi0_actions(horizon: int = DEFAULT_ACTION_HORIZON) -> np.ndarray:
 
 def get_obs_from_env(robofac_python: str) -> dict:
     """Boot ManiSkillRemoteEnv, reset, return raw obs dict."""
-    from examples.envs.mani_skill_client import ManiSkillRemoteEnv
+    from examples.sim.envs.mani_skill_client import ManiSkillRemoteEnv
     print("[env] Booting ManiSkillRemoteEnv (robofac subprocess)…", flush=True)
     env = ManiSkillRemoteEnv(robofac_python=robofac_python)
     print("[env] Resetting environment…", flush=True)
@@ -125,7 +125,7 @@ def run_pi0_inference(
     instruction: str,
 ) -> np.ndarray:
     """Load LocalPi0Policy, run one inference, return raw action chunk (H, 8)."""
-    from examples.evaluate_pi0_sim import (
+    from examples.sim.evaluate_pi0 import (
         LocalPi0Policy,
         _extract_sim_obs,
         _obs_to_pi0_input,

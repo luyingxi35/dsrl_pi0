@@ -23,9 +23,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from examples.envs.mani_skill_client import ManiSkillRemoteEnv
-from examples.sim_action_utils import RealTimeActionChunker, pi0_velocity_chunk_to_sim_actions
-from examples.train_utils_sim_dino import (
+from examples.sim.envs.mani_skill_client import ManiSkillRemoteEnv
+from examples.sim.action_utils import pi0_vel_chunk_to_joint_pos_actions
+from examples.sim.train_utils_dino import (
     PI0_NOISE_DIM,
     STATE_DIM,
     SimDinoObservationBuilder,
@@ -33,7 +33,7 @@ from examples.train_utils_sim_dino import (
     _extract_sim_obs,
     _obs_to_pi0_input,
 )
-from examples.utils.real_robot_common import (
+from examples.real.utils.real_robot_common import (
     RolloutResult,
     append_result,
     resolve_outputdir,
@@ -153,14 +153,12 @@ def run_rollout(
     start_time = time.time()
     side_image_list: list[np.ndarray] = []
     wrist_image_list: list[np.ndarray] = []
-    action_chunker = RealTimeActionChunker(
-        action_horizon=args.action_horizon,
-        action_dim=8,
-        m=args.action_chunk_decay,
-    )
+    sim_actions = None   # (query_freq, 8) absolute joint-pos waypoints
     success = False
     failure_reason = "timeout"
     env_steps = 0
+
+    query_freq = args.query_freq   # re-query pi0 every this many steps (match training)
 
     pbar = tqdm(total=args.max_rollout_steps, desc=f"dino sim episode {episode_id}", unit="step")
     try:
@@ -169,27 +167,39 @@ def run_rollout(
             side_image_list.append(ext_rgb)
             wrist_image_list.append(wrist_rgb)
 
-            pi0_obs = _obs_to_pi0_input(qpos, ext_rgb, wrist_rgb, args.instruction)
-            obs_dict = obs_builder.build(qpos, ext_rgb, wrist_rgb, pi0_obs, agent_dp)
-            state = np.asarray(obs_dict["state"])
-            if state.shape != (1, STATE_DIM, 1):
-                raise RuntimeError(f"Expected DSRL state shape (1, {STATE_DIM}, 1), got {state.shape}")
+            # ── Re-query pi0 every query_freq steps (mirrors training collect_traj) ──
+            if t % query_freq == 0:
+                pi0_obs  = _obs_to_pi0_input(qpos, ext_rgb, wrist_rgb, args.instruction)
+                obs_dict = obs_builder.build(qpos, ext_rgb, wrist_rgb, pi0_obs, agent_dp)
+                state    = np.asarray(obs_dict["state"])
+                if state.shape != (1, STATE_DIM, 1):
+                    raise RuntimeError(
+                        f"Expected DSRL state shape (1, {STATE_DIM}, 1), got {state.shape}"
+                    )
 
-            actions_noise = agent.eval_actions(obs_dict)
-            _, noise = make_full_horizon_noise(actions_noise, agent.action_chunk_shape)
-            response = agent_dp.infer(pi0_obs, noise=np.asarray(noise))
-            actions = np.asarray(response["actions"])
-            if actions.ndim != 2 or actions.shape[-1] < 8:
-                raise RuntimeError(f"Expected pi0 actions shape (H, >=8), got {actions.shape}")
-            if len(actions) < args.action_horizon:
-                raise RuntimeError(
-                    f"--action_horizon ({args.action_horizon}) exceeds pi0 action horizon "
-                    f"({len(actions)})."
+                actions_noise = agent.eval_actions(obs_dict)
+                _, noise      = make_full_horizon_noise(actions_noise, agent.action_chunk_shape)
+                response      = agent_dp.infer(pi0_obs, noise=np.asarray(noise))
+                actions       = np.asarray(response["actions"])
+                if actions.ndim != 2 or actions.shape[-1] < 8:
+                    raise RuntimeError(
+                        f"Expected pi0 actions shape (H, >=8), got {actions.shape}"
+                    )
+                if len(actions) < query_freq:
+                    raise RuntimeError(
+                        f"--query_freq ({query_freq}) exceeds pi0 action horizon "
+                        f"({len(actions)})."
+                    )
+                # Convert velocity chunk → absolute joint-position waypoints
+                # (same as training: pi0_vel_chunk_to_joint_pos_actions)
+                sim_actions = pi0_vel_chunk_to_joint_pos_actions(
+                    qpos, actions,
+                    action_scale=args.action_scale,
+                    execution_steps=query_freq,
                 )
-            sim_actions = pi0_velocity_chunk_to_sim_actions(
-                qpos, actions[: args.action_horizon], action_scale=args.action_scale
-            )
-            action_8d = action_chunker.step(sim_actions)
+
+            # Apply waypoint for this sub-step sequentially (no blending)
+            action_8d = np.asarray(sim_actions[t % query_freq], dtype=np.float32)
             env_obs, _reward, terminated, truncated, info = env.step(action_8d)
             env_steps = t + 1
             pbar.update(1)
@@ -237,16 +247,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=8,
         type=int,
         help=(
-            "Legacy recorded query frequency. Sim eval now runs pi0 inference every "
-            "control step and temporally ensembles overlapping chunks."
+            "Re-query pi0 every this many env steps (must match training query_freq). "
+            "Default: 8."
         ),
     )
-    parser.add_argument("--action_horizon", default=8, type=int)
+    parser.add_argument("--action_horizon", default=8, type=int,
+                        help="Deprecated — ignored. Chunk size is controlled by --query_freq.")
     parser.add_argument(
         "--action_chunk_decay",
         default=0.01,
         type=float,
-        help="Exponential decay m for real-time action chunk ensembling.",
+        help="Deprecated — ignored. RealTimeActionChunker is no longer used.",
     )
     parser.add_argument("--checkpoint_path", default=DEFAULT_CHECKPOINT_PATH)
     parser.add_argument("--robofac_python", default=DEFAULT_ROBOFAC_PYTHON)
@@ -288,17 +299,13 @@ def run_evaluation(args: argparse.Namespace) -> None:
         raise ValueError("--max_rollout_steps must be positive.")
     if args.query_freq <= 0:
         raise ValueError("--query_freq must be positive.")
-    if args.action_horizon <= 0:
-        raise ValueError("--action_horizon must be positive.")
-    if args.action_chunk_decay < 0:
-        raise ValueError("--action_chunk_decay must be non-negative.")
     if args.rl_noise_horizon <= 0:
         raise ValueError("--rl_noise_horizon must be positive.")
     if args.action_scale <= 0:
         raise ValueError("--action_scale must be positive.")
-    if args.action_horizon > args.rl_noise_horizon:
+    if args.query_freq > args.rl_noise_horizon:
         raise ValueError(
-            f"--action_horizon ({args.action_horizon}) must be <= --rl_noise_horizon "
+            f"--query_freq ({args.query_freq}) must be <= --rl_noise_horizon "
             f"({args.rl_noise_horizon})."
         )
 
@@ -311,9 +318,9 @@ def run_evaluation(args: argparse.Namespace) -> None:
                              workspace_bounds_path=args.workspace_bounds_path)
 
     agent = create_agent(args)
-    if args.action_horizon > agent.action_chunk_shape[0]:
+    if args.query_freq > agent.action_chunk_shape[0]:
         raise ValueError(
-            f"--action_horizon ({args.action_horizon}) must be <= restored action horizon "
+            f"--query_freq ({args.query_freq}) must be <= restored action horizon "
             f"({agent.action_chunk_shape[0]})."
         )
 

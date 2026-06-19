@@ -10,17 +10,17 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from examples.train_real_dino import DINO_V2_SMALL_CLS_DIM
-from examples.train_real_dino import PI0_VLM_EMBED_DIM
-from examples.train_real_dino import PolicyServerConfig
-from examples.train_real_dino import PolicyService
-from examples.train_real_dino import RobotIO
-from examples.train_real_dino import RobotRuntimeConfig
-from examples.train_real_dino import STATE_DIM
-from examples.train_real_dino import WristDinoFeatureExtractor
-from examples.train_real_dino import WristDinoObservationBuilder
-from examples.train_utils_real import _extract_observation
-from examples.train_utils_real import get_pi0_input
+from examples.real.train_dino import DINO_V2_SMALL_CLS_DIM
+from examples.real.train_dino import PI0_VLM_EMBED_DIM
+from examples.real.train_dino import PolicyServerConfig
+from examples.real.train_dino import PolicyService
+from examples.real.train_dino import RobotIO
+from examples.real.train_dino import RobotRuntimeConfig
+from examples.real.train_dino import STATE_DIM
+from examples.real.train_dino import WristDinoFeatureExtractor
+from examples.real.train_dino import WristDinoObservationBuilder
+from examples.real.train_utils import _extract_observation
+from examples.real.train_utils import get_pi0_input
 
 
 class CachedPolicyService:

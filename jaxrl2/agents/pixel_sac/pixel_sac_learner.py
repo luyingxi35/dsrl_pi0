@@ -242,7 +242,7 @@ class PixelSACLearner(Agent):
         return info
 
     def perform_eval(self, variant, i, wandb_logger, eval_buffer, eval_buffer_iterator, eval_env):
-        from examples.train_utils_sim import make_multiple_value_reward_visulizations
+        from examples.sim.train_utils import make_multiple_value_reward_visulizations
         make_multiple_value_reward_visulizations(self, variant, i, eval_buffer, wandb_logger)
 
     def make_value_reward_visulization(self, variant, trajs):

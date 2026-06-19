@@ -3,9 +3,9 @@ import dataclasses
 import numpy as np
 import pytest
 
-from examples.train_real_dino import RobotRuntimeConfig
-from examples.train_utils_real import _extract_observation
-from examples.train_utils_real import get_pi0_input
+from examples.real.train_dino import RobotRuntimeConfig
+from examples.real.train_utils import _extract_observation
+from examples.real.train_utils import get_pi0_input
 
 
 @dataclasses.dataclass(frozen=True)

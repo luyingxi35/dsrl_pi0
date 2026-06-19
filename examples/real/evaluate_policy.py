@@ -57,7 +57,7 @@ def create_agent(args: argparse.Namespace) -> Any:
     """Build and restore a StateSACLearner from a train_real_dino checkpoint."""
     from jaxrl2.agents.state_sac.state_sac_learner import StateSACLearner
     from jaxrl2.utils.general_utils import add_batch_dim
-    from examples.train_real_dino import DummyEnv
+    from examples.real.train_dino import DummyEnv
 
     class _VariantLike:
         rl_noise_horizon = args.rl_noise_horizon
@@ -93,7 +93,7 @@ def create_agent(args: argparse.Namespace) -> Any:
 
 def create_obs_builder(args: argparse.Namespace) -> Any:
     """Build WristDinoObservationBuilder once for the whole eval run."""
-    from examples.train_real_dino import WristDinoFeatureExtractor, WristDinoObservationBuilder
+    from examples.real.train_dino import WristDinoFeatureExtractor, WristDinoObservationBuilder
 
     dino_extractor = WristDinoFeatureExtractor(
         model_name=args.dino_model_name,
@@ -664,7 +664,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
     if metadata and "action_horizon" in metadata and "action_dim" in metadata:
         server_horizon = int(metadata["action_horizon"])
         server_dim = int(metadata["action_dim"])
-        from examples.train_real_dino import PI0_NOISE_DIM
+        from examples.real.train_dino import PI0_NOISE_DIM
 
         noise_h, noise_d = agent.action_chunk_shape
         if server_horizon != noise_h or server_dim != noise_d:

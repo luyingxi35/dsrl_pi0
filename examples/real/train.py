@@ -17,7 +17,7 @@ from jaxrl2.data import ReplayBuffer
 from jaxrl2.utils.general_utils import add_batch_dim
 from jaxrl2.utils.wandb_logger import WandBLogger, create_exp_name
 
-from examples.train_utils_real import trajwise_alternating_training_loop
+from examples.real.train_utils import trajwise_alternating_training_loop
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:

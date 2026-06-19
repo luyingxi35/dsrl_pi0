@@ -19,7 +19,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
-from examples.utils.real_robot_common import StateInterpolator
+from examples.real.utils.real_robot_common import StateInterpolator
 
 
 def test_midpoint_interpolation() -> None:

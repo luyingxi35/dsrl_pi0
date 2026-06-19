@@ -60,14 +60,38 @@ pip install -e RoboFPE
 # set HF_ENDPOINT if needed (e.g. export HF_ENDPOINT=https://hf-mirror.com)
 ```
 
+## Code Structure
+
+```
+examples/
+├── sim/                          # Simulation (ManiSkill/Libero/Aloha)
+│   ├── envs/                     # ManiSkill env server & client
+│   ├── action_utils.py           # Joint-velocity → joint-position helpers
+│   ├── calibrate_workspace.py    # Workspace calibration
+│   ├── robometer_reward_*.py     # Dense reward server & client
+│   ├── plot_curve.py             # Training curve plotter
+│   ├── train*.py                 # Training loops (base / dino / dino-dense)
+│   ├── train_utils*.py           # Training utilities
+│   ├── launch_train*.py          # Entry points for each training variant
+│   └── evaluate_*.py             # Policy evaluators (pi0, dino)
+├── real/                         # Real robot (Franka/DROID)
+│   ├── utils/                    # Real-robot common utilities
+│   ├── train*.py / train_utils.py
+│   ├── launch_train*.py
+│   └── evaluate_*.py
+└── scripts/
+    ├── sim/                      # Shell scripts for simulation experiments
+    └── real/                     # Shell scripts for real-robot experiments
+```
+
 ## Simulation
 Libero
 ```
-bash examples/scripts/run_libero.sh
+bash examples/scripts/sim/run_libero.sh
 ```
 Aloha
 ```
-bash examples/scripts/run_aloha.sh
+bash examples/scripts/sim/run_aloha.sh
 ```
 ### Training with binary reward
 
@@ -83,10 +107,10 @@ state = [ proprio (8-D) | pi0 VLM embed (2048-D) | DINOv2-small CLS (384-D) ] = 
 ```bash
 # Every 1000 env steps: eval (10 episodes) + save checkpoint.
 # Stops each seed once success rate >= 95% for 2 consecutive evals.
-bash examples/scripts/run_sim_dino.sh
+bash examples/scripts/sim/run_dino.sh
 
 # Custom seeds&GPU assignment:
-bash examples/scripts/run_sim_dino.sh --seeds "0 1 2 3" --gpus "6 7"
+bash examples/scripts/sim/run_dino.sh --seeds "0 1 2 3" --gpus "6 7"
 ```
 
 Output layout:
@@ -103,15 +127,15 @@ logs/DSRL_pi0_SimDino/
 **Simulation policy evaluation** (run from the `dsrl_pi0` environment; ManiSkill
 rollouts are spawned in the `robofac` subprocess environment):
 ```bash
-bash examples/scripts/eval_sim_pi0.sh
+bash examples/scripts/sim/eval_pi0.sh
 
-bash examples/scripts/eval_sim_dino.sh \
+bash examples/scripts/sim/eval_dino.sh \
     --restore_path ./logs/DSRL_pi0_SimDino/dsrl_pi0_sim_dino_s0_<hash>
 ```
 
 **Plot only** (re-plot from existing CSVs without re-running training):
 ```bash
-python3 examples/plot_sim_dino_curve.py \
+python3 examples/sim/plot_curve.py \
     --log_dir  ./logs/DSRL_pi0_SimDino \
     --output   ./logs/DSRL_pi0_SimDino/sim_dino_curve.png \
     --stop_line 0.95 \
@@ -133,10 +157,10 @@ dense_reward[t] = binary_reward[t]  +  progress_reward_scale × Robometer_progre
 
 ```bash
 # Runs seeds 0 / 1 / 2 in PARALLEL on GPUs 0 / 1 / 2.
-bash examples/scripts/run_sim_dino_dense.sh
+bash examples/scripts/sim/run_dino_dense.sh
 
 # Custom seeds / GPUs:
-bash examples/scripts/run_sim_dino_dense.sh --seeds "0 1 2" --gpus "4 5 6"
+bash examples/scripts/sim/run_dino_dense.sh --seeds "0 1 2" --gpus "4 5 6"
 ```
 
 **Integration test** (one ManiSkill rollout with random actions + Robometer reward calibration,
@@ -154,15 +178,15 @@ per-frame `progress` labels, and a Robometer progress line chart (bottom).
 **Simulation policy evaluation** (run from the `dsrl_pi0` environment; ManiSkill
 rollouts are spawned in the `robofac` subprocess environment):
 ```bash
-bash examples/scripts/eval_sim_pi0.sh
+bash examples/scripts/sim/eval_pi0.sh
 
-bash examples/scripts/eval_sim_dino.sh \
+bash examples/scripts/sim/eval_dino.sh \
     --restore_path ./logs/DSRL_pi0_SimDino/dsrl_pi0_sim_dino_s0_<hash>
 ```
 
 **Plot only** (re-plot from existing CSVs without re-running training):
 ```bash
-python3 examples/plot_sim_dino_curve.py \
+python3 examples/sim/plot_curve.py \
     --log_dir  ./logs/DSRL_pi0_SimDino \
     --output   ./logs/DSRL_pi0_SimDino/sim_dino_curve.png \
     --stop_line 0.95 \
@@ -208,16 +232,16 @@ python scripts/server/run_server.py
 cd openpi && python scripts/serve_policy.py --env=DROID
 ```
 
-3. [On the robot laptop/workstation] Fill in camera IDs and remote policy host/port in `examples/scripts/run_real.sh`, then run DSRL:
+3. [On the robot laptop/workstation] Fill in camera IDs and remote policy host/port in `examples/scripts/real/run.sh`, then run DSRL:
 ```
 export HF_ENDPOINT=https://hf-mirror.com
-bash examples/scripts/run_real.sh
+bash examples/scripts/real/run.sh
 ```
 
-For the Wrist-DINO state-only real-world variant, fill in the camera IDs and remote policy host/port in `examples/scripts/run_real_dino.sh`, then run:
+For the Wrist-DINO state-only real-world variant, fill in the camera IDs and remote policy host/port in `examples/scripts/real/run_dino.sh`, then run:
 ```
 export HF_ENDPOINT=https://hf-mirror.com
-bash examples/scripts/run_real_dino.sh [--resume_from [RESUME_DIR]]
+bash examples/scripts/real/run_dino.sh [--resume_from [RESUME_DIR]]
 ```
 This variant uses only the wrist camera for the RL steering policy image feature, featurized by `facebook/dinov2-small` into a 384-D CLS embedding. The full RL state is 2440-D: 7 joint positions, 1 gripper position, 2048-D pi0 VLM embedding, and 384-D DINO feature. The pi0 policy request still keeps its expected DROID inputs. The first run may download/cache the DINO-v2-small model through HuggingFace Transformers.
 
@@ -231,7 +255,7 @@ Every `--checkpoint_interval` gradient steps (default 10 000) the training loop 
 To resume from the latest checkpoint, pass `--resume_from <outputdir>` in place of the normal run:
 ```bash
 export HF_ENDPOINT=https://hf-mirror.com
-python3 examples/launch_train_real_dino.py \
+python3 examples/real/launch_train_dino.py \
   --resume_from $EXP/DSRL_pi0_FrankaDroid/<your_run_name> \
   --algorithm state_sac \
   --env franka_droid \
@@ -287,7 +311,7 @@ python scripts/serve_policy.py --env=DROID --port=8000
 cd ~/yingxi/dsrl_pi0
 conda activate dsrl_pi0
 
-python3 examples/evaluate_policy_real.py \
+python3 examples/real/evaluate_policy.py \
 --restore_path ./logs/DSRL_pi0_FrankaDroid/<exp_name_with_checkpoints> \
 --instruction "put the spoon on the plate" \
 --eval_episodes 10 \
@@ -318,7 +342,7 @@ To evaluate the pi0 policy alone with wrist-camera observations only, keep the N
 cd ~/yingxi/dsrl_pi0
 conda activate dsrl_pi0
 
-python3 examples/evaluate_pi0_real.py \
+python3 examples/real/evaluate_pi0.py \
 --instruction "pick up the blue peg" \
 --eval_episodes 10 \
 --max_duration_s 60 \
@@ -359,7 +383,7 @@ python scripts/serve_policy.py --env=DROID --port=8000
 ```
 On the workstation:
 ```
-bash examples/scripts/check_real_dino_obs.sh
+bash examples/scripts/real/check_dino_obs.sh
 ```
 
 ## Credits

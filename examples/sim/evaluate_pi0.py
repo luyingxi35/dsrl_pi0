@@ -23,9 +23,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from examples.envs.mani_skill_client import ManiSkillRemoteEnv
-from examples.sim_action_utils import pi0_vel_chunk_to_joint_pos_actions
-from examples.utils.real_robot_common import (
+from examples.sim.envs.mani_skill_client import ManiSkillRemoteEnv
+from examples.sim.action_utils import pi0_vel_chunk_to_joint_pos_actions
+from examples.real.utils.real_robot_common import (
     RolloutResult,
     append_result,
     resolve_outputdir,

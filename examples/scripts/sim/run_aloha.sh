@@ -15,7 +15,7 @@ export LD_LIBRARY_PATH=/home/gpu4/miniconda3/envs/dsrl_pi0/lib/python3.11/site-p
 
 pip install mujoco==2.3.7
 
-python3 -m examples.launch_train_sim \
+python3 -m examples.sim.launch_train \
 --algorithm pixel_sac \
 --env aloha_cube \
 --prefix dsrl_pi0_aloha \

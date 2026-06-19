@@ -2,7 +2,7 @@ cd ~/yingxi/dsrl_pi0
 export HF_ENDPOINT=https://hf-mirror.com
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
-python3 examples/evaluate_pi0_real.py \
+python3 examples/real/evaluate_pi0.py \
 --instruction "pick up the blue peg" \
 --eval_episodes 10 \
 --max_duration_s 60 \

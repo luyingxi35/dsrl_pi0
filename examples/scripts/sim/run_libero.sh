@@ -17,7 +17,7 @@ export LD_LIBRARY_PATH="${ALL_NVIDIA}:${LD_LIBRARY_PATH}"
 
 pip install mujoco==3.3.1
 
-python3 -m examples.launch_train_sim \
+python3 -m examples.sim.launch_train \
 --algorithm pixel_sac \
 --env libero \
 --prefix dsrl_pi0_libero \

@@ -25,7 +25,7 @@ from jaxrl2.data import ReplayBuffer
 from jaxrl2.utils.wandb_logger import WandBLogger, create_exp_name
 import tempfile
 from functools import partial
-from examples.train_utils_sim import trajwise_alternating_training_loop
+from examples.sim.train_utils import trajwise_alternating_training_loop
 import tensorflow as tf
 from jax.experimental.compilation_cache import compilation_cache
 

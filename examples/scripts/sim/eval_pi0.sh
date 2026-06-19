@@ -2,8 +2,8 @@
 # Evaluate pi0_droid only in ManiSkill simulation.
 #
 # Usage:
-#   bash examples/scripts/eval_sim_pi0.sh
-#   bash examples/scripts/eval_sim_pi0.sh --eval_episodes 3 --max_rollout_steps 100
+#   bash examples/scripts/sim/eval_pi0.sh
+#   bash examples/scripts/sim/eval_pi0.sh --eval_episodes 3 --max_rollout_steps 100
 
 set -euo pipefail
 

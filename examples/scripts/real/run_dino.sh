@@ -1,8 +1,8 @@
 #!/bin/bash
 #
 # Usage:
-#   bash examples/scripts/run_real_dino.sh                       # fresh run
-#   bash examples/scripts/run_real_dino.sh --resume_from <dir>   # resume from outputdir
+#   bash examples/scripts/real/run_dino.sh                       # fresh run
+#   bash examples/scripts/real/run_dino.sh --resume_from <dir>   # resume from outputdir
 
 # ── Parse CLI arguments ───────────────────────────────────────────────────────
 RESUME_FROM=""
@@ -58,7 +58,7 @@ if [[ -n "${RESUME_FROM}" ]]; then
     RESUME_ARG="--resume_from ${RESUME_FROM}"
 fi
 
-python3 examples/launch_train_real_dino.py \
+python3 examples/real/launch_train_dino.py \
 --algorithm state_sac \
 --env franka_droid \
 --prefix dsrl_pi0_real_dino \

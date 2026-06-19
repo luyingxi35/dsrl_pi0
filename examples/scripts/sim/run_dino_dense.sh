@@ -9,11 +9,14 @@
 #   - DINOv2 on WRIST camera (hand_camera), matching real-robot setup
 #
 # Usage:
-#   bash examples/scripts/run_sim_dino.sh
-#   bash examples/scripts/run_sim_dino.sh --seeds "0 1 2 3"
-#   bash examples/scripts/run_sim_dino.sh --seeds "0 1 2" --gpus "4 5 6"
+#   bash examples/scripts/sim/run_dino.sh
+#   bash examples/scripts/sim/run_dino.sh --seeds "0 1 2 3"
+#   bash examples/scripts/sim/run_dino_dense.sh --seeds "0 1 2" --gpus "4 5 6"  # 1:1
+#   bash examples/scripts/sim/run_dino_dense.sh --seeds "0 1 2" --gpus "7"      # all on GPU 7
+#   bash examples/scripts/sim/run_dino_dense.sh --seeds "0 1 2 3" --gpus "6 7"  # round-robin
 #
-# Seeds run in parallel: seed[i] is pinned to gpus[i].
+# Seeds run in parallel. GPU assignment is round-robin:
+#   seed[i] → gpus[i % len(gpus)] so fewer GPUs than seeds is fine.
 # Default GPU assignment: seed index maps to GPU index (seed 0 → GPU 0, etc.).
 
 set -euo pipefail
@@ -37,17 +40,19 @@ else
     read -ra GPUS_ARR <<< "$GPUS"
 fi
 
-if [[ ${#SEEDS_ARR[@]} -ne ${#GPUS_ARR[@]} ]]; then
-    echo "Error: --seeds has ${#SEEDS_ARR[@]} values but --gpus has ${#GPUS_ARR[@]}" >&2
-    exit 1
-fi
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 ROBOFAC_PYTHON=/opt/yingxi/envs/robofac/bin/python3
 PI0_DROID_CKPT=/opt/yingxi/pi0_droid
 
+# ── Robometer dense reward config ─────────────────────────────────────────────
+ROBOMETER_PYTHON=/opt/yingxi/envs/robometer/bin/python3
+ROBOMETER_CKPT=/opt/yingxi/checkpoint-400
+ROBOMETER_BASE_MODEL=/opt/caoyuhang/Pretrained_models/Qwen3-VL-4B-Instruct
+PROGRESS_REWARD_SCALE=1.0
+
 # ── Shared environment ─────────────────────────────────────────────────────────
-proj_name=DSRL_pi0_SimDino
+proj_name=DSRL_pi0_SimDinoDense
 
 export DISPLAY=:0
 export MUJOCO_GL=egl
@@ -100,7 +105,7 @@ trap cleanup INT TERM
 
 for idx in "${!SEEDS_ARR[@]}"; do
     SEED=${SEEDS_ARR[$idx]}
-    GPU=${GPUS_ARR[$idx]}
+    GPU=${GPUS_ARR[$(( idx % ${#GPUS_ARR[@]} ))]}
     LOG="$EXP/seed${SEED}_gpu${GPU}.log"
 
     echo "  Seed $SEED → GPU $GPU  (log: $LOG)"
@@ -110,7 +115,7 @@ for idx in "${!SEEDS_ARR[@]}"; do
     # so MUJOCO_EGL_DEVICE_ID is always 0.
     CUDA_VISIBLE_DEVICES=$GPU \
     MUJOCO_EGL_DEVICE_ID=0 \
-        python3 -m examples.launch_train_sim_dino \
+        python3 -m examples.sim.launch_train_dino_dense \
             --algorithm state_sac \
             --env peg_insertion_vertical_v2 \
             --prefix "dsrl_pi0_sim_dino_s${SEED}" \
@@ -127,7 +132,7 @@ for idx in "${!SEEDS_ARR[@]}"; do
             --num_initial_traj_collect 5 \
             --action_magnitude 2.0 \
             --action_scale 0.5 \
-            --instruction 'pick up the peg and insert it vertically' \
+            --instruction 'pick up the peg and insert it vertically into the hole' \
             --query_freq 8 \
             --rl_noise_horizon 8 \
             --network_type transformer \
@@ -145,6 +150,10 @@ for idx in "${!SEEDS_ARR[@]}"; do
             --stop_success_rate 0.95 \
             --stop_window 2 \
             ${WORKSPACE_BOUNDS_PATH:+--workspace_bounds_path "${WORKSPACE_BOUNDS_PATH}"} \
+            --robometer_python       "${ROBOMETER_PYTHON}" \
+            --robometer_checkpoint_path "${ROBOMETER_CKPT}" \
+            --robometer_base_model_id   "${ROBOMETER_BASE_MODEL}" \
+            --progress_reward_scale     "${PROGRESS_REWARD_SCALE}" \
         > "$LOG" 2>&1 &
 
     PIDS+=($!)
@@ -178,11 +187,11 @@ set -e
 # ── Aggregate plot ─────────────────────────────────────────────────────────────
 echo ""
 echo "All seeds done. Plotting..."
-python3 examples/plot_sim_dino_curve.py \
+python3 examples/sim/plot_curve.py \
     --log_dir  "$EXP" \
     --output   "$EXP/sim_dino_curve.png" \
     --stop_line 0.95 \
-    --title    "PegInsertionVertical — DSRL (wrist-aligned, $(echo $SEEDS | wc -w) seeds)"
+    --title    "PegInsertionVertical — DSRL Dense Reward (wrist-aligned, $(echo $SEEDS | wc -w) seeds)"
 
 echo ""
 echo "=== Sweep complete ==="

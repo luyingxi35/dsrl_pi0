@@ -28,7 +28,7 @@ DSRL_EVAL_TIMING_MODE="low_watermark"
 MIN_FUTURE_ACTIONS="2"
 MIN_FUTURE_HORIZON_S="0.25"
 
-python3 examples/evaluate_policy_real.py \
+python3 examples/real/evaluate_policy.py \
 --restore_path ./logs/DSRL_pi0_FrankaDroid/dsrl_pi0_real_dino_2026_06_13_15_37_49_0000--s-0 \
 --instruction "pick up the blue peg" \
 --eval_episodes 10 \

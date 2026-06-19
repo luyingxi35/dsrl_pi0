@@ -1,7 +1,7 @@
 import argparse
 import sys
 
-from examples.train_real_dino import main
+from examples.real.train_dino import main
 from jaxrl2.utils.launch_util import parse_training_args
 
 

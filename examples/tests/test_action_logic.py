@@ -23,7 +23,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
-from examples.utils.real_robot_common import (
+from examples.real.utils.real_robot_common import (
     LatestObservationBuffer,
     action_timestamps_from_obs,
     binarize_and_clip_action,

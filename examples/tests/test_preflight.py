@@ -38,7 +38,7 @@ def check_camera_timestamps(env, args) -> None:
     """[1/4] Verify camera timestamp keys exist in obs['timestamp']['cameras']."""
     logging.info("\n[1/4] Camera timestamp structure")
 
-    from examples.utils.real_robot_common import _find_camera_ts_ms
+    from examples.real.utils.real_robot_common import _find_camera_ts_ms
 
     obs = env.get_observation()
     cam_ts = obs.get("timestamp", {}).get("cameras", {})
@@ -69,7 +69,7 @@ def check_t_obs_calibration(env, args) -> float:
     """[2/4] Verify t_obs drift matches configured obs_latency."""
     logging.info("\n[2/4] t_obs calibration")
 
-    from examples.utils.real_robot_common import extract_observation_eval
+    from examples.real.utils.real_robot_common import extract_observation_eval
 
     obs = env.get_observation()
     _, t_obs = extract_observation_eval(

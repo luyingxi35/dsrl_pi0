@@ -30,7 +30,7 @@ _REPO = str(Path(__file__).resolve().parents[2])
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
-from examples.robometer_reward_client import (
+from examples.sim.robometer_reward_client import (
     RobometerRewardClient,
     _DEFAULT_BASE_MODEL_ID,
     _DEFAULT_CHECKPOINT_PATH,
@@ -87,7 +87,7 @@ def load_frames_from_video_dir(
 
 def collect_rollout_frames(max_frames: int = 75) -> np.ndarray:
     """Run one ManiSkill rollout and collect exterior frames."""
-    from examples.envs.mani_skill_client import ManiSkillRemoteEnv
+    from examples.sim.envs.mani_skill_client import ManiSkillRemoteEnv
     env = ManiSkillRemoteEnv()
     obs, _ = env.reset()
     frames = []

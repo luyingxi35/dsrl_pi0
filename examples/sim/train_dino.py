@@ -36,14 +36,14 @@ from jaxrl2.data import ReplayBuffer
 from jaxrl2.utils.general_utils import add_batch_dim
 from jaxrl2.utils.wandb_logger import WandBLogger, create_exp_name
 
-from examples.train_utils_sim_dino import (
+from examples.sim.train_utils_dino import (
     STATE_DIM,
     PI0_NOISE_DIM,
     WristDinoFeatureExtractor,
     SimDinoObservationBuilder,
     trajwise_alternating_training_loop,
 )
-from examples.envs.mani_skill_client import ManiSkillRemoteEnv
+from examples.sim.envs.mani_skill_client import ManiSkillRemoteEnv
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:

@@ -32,7 +32,7 @@ ACTION_SCALE="1.0"
 MAX_JOINT_SPEED="0.3"
 
 
-python3 examples/launch_train_real.py \
+python3 examples/real/launch_train.py \
 --algorithm pixel_sac \
 --env franka_droid \
 --prefix dsrl_pi0_real \

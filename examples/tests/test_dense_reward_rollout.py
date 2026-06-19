@@ -157,8 +157,8 @@ def main() -> None:
     print(f"Output dir: {out_dir}")
 
     # ── Imports (lightweight — no JAX / pi0 / DINOv2) ────────────────────────
-    from examples.envs.mani_skill_client import ManiSkillRemoteEnv
-    from examples.robometer_reward_client import RobometerRewardClient
+    from examples.sim.envs.mani_skill_client import ManiSkillRemoteEnv
+    from examples.sim.robometer_reward_client import RobometerRewardClient
 
     # ── Robometer client ──────────────────────────────────────────────────────
     print(f"Starting Robometer server on GPU {args.gpu} (loading Qwen3-4B, ~20s) …")
@@ -206,7 +206,7 @@ def main() -> None:
 
         # Random joint action in Franka workspace
         # First 7: joint positions near reset pose; last 1: gripper open (1.0)
-        from examples.envs.mani_skill_client import DROID_RESET_QPOS
+        from examples.sim.envs.mani_skill_client import DROID_RESET_QPOS
         noise = np.random.uniform(-0.05, 0.05, 7).astype(np.float32)
         action = np.concatenate([DROID_RESET_QPOS[:7] + noise, [1.0]]).astype(np.float32)
 

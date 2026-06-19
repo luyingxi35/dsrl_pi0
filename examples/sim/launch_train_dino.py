@@ -11,7 +11,7 @@ if _REPO_ROOT not in sys.path:
 
 import argparse
 
-from examples.train_sim_dino import main
+from examples.sim.train_dino import main
 from jaxrl2.utils.launch_util import parse_training_args
 
 

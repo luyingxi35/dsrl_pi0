@@ -1,6 +1,6 @@
 import argparse
 import sys
-from examples.train_sim import main
+from examples.sim.train import main
 from jaxrl2.utils.launch_util import parse_training_args
 
 

@@ -9,7 +9,7 @@ if str(EXAMPLES_DIR) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from examples.evaluate_policy_real import (
+from examples.real.evaluate_policy import (
     _count_future_waypoints,
     _future_waypoint_horizon_s,
     build_parser as build_dsrl_parser,
